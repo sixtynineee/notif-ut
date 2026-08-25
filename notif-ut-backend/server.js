@@ -2,6 +2,18 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
+const http = require('http');
+
+// =========================================================================
+// 0. DUMMY HTTP SERVER (Mencegah Port Timeout di Render Web Service)
+// =========================================================================
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('NOTIF-UT Bot is running active!\n');
+}).listen(PORT, () => {
+    console.log(`🌐 Dummy Web Server berjalan di port ${PORT}`);
+});
 
 // =========================================================================
 // 1. KONFIGURASI SUPABASE
@@ -11,7 +23,7 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJva
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (Optimasi Ringan RAM untuk Render/Cloud)
+// 2. INISIALISASI BOT WHATSAPP (Optimasi Ringan RAM untuk Render)
 // =========================================================================
 const client = new Client({
     authStrategy: new LocalAuth(),
@@ -26,7 +38,7 @@ const client = new Client({
             '--no-first-run',
             '--no-zygote',
             '--disable-gpu',
-            '--single-process',          // Sangat menghemat penggunaan RAM
+            '--single-process',
             '--disable-extensions',
             '--disable-component-update',
             '--disable-background-networking',
@@ -39,7 +51,6 @@ const client = new Client({
     }
 });
 
-// Tampilan QR Code Terminal Ringkas & Rapi
 client.on('qr', (qr) => {
     console.log('\n=== SCAN QR CODE DI BAWAH INI DENGAN WHATSAPP HP KAMU ===\n');
     qrcode.generate(qr, { small: true });
@@ -57,10 +68,7 @@ client.on('message', async (msg) => {
 
     const teks = msg.body.trim().toUpperCase();
 
-    // EKSTRAKSI NOMOR HP ASLI DARI PAYLOAD MENTAH WHATSAPP (_data)
-    // Mengabaikan ID internal @lid (2192...) dan mengambil JID HP asli
     let rawJid = "";
-    
     if (msg._data && msg._data.from && msg._data.from.endsWith('@c.us')) {
         rawJid = msg._data.from;
     } else if (msg._data && msg._data.author && msg._data.author.endsWith('@c.us')) {
@@ -70,10 +78,8 @@ client.on('message', async (msg) => {
         rawJid = contact.id._serialized || msg.from;
     }
 
-    // Ambil angka murni nomor HP
     let nomorTeleponMurni = rawJid.replace('@c.us', '').replace('@lid', '').split(':')[0].replace(/[^0-9]/g, '');
 
-    // Standardisasi 3 format nomor Indonesia (62..., 08..., +62...)
     let nomor62 = nomorTeleponMurni.startsWith('0') ? '62' + nomorTeleponMurni.slice(1) : nomorTeleponMurni;
     let nomor08 = nomorTeleponMurni.startsWith('62') ? '0' + nomorTeleponMurni.slice(2) : nomorTeleponMurni;
     let nomorPlus62 = '+' + nomor62;
@@ -101,7 +107,7 @@ client.on('message', async (msg) => {
         return;
     }
 
-    // B. FITUR CEK JADWAL (FORMAT RINGKAS SESI 1-8)
+    // B. FITUR CEK JADWAL
     if (teks === 'JADWAL' || teks === 'INFO' || teks === 'CEK JADWAL') {
         const { data: mhs } = await supabase
             .from('mahasiswa')
@@ -143,7 +149,7 @@ client.on('message', async (msg) => {
         return;
     }
 
-    // C. BANTUAN / FALLBACK UNTUK PESAN LAINNYA
+    // C. FALLBACK
     const pesanBantuan = `🤖 *[BOT NOTIF-UT]*\n\nHalo! Saya adalah bot pengingat otomatis Tuton UT. Kata kunci yang dapat kamu gunakan:\n\n` +
         `👉 *JADWAL* : Cek kalender jadwal Tuton 1 semester (Sesi 1-8).\n` +
         `👉 *STOP* : Berhenti menerima notifikasi pengingat.`;
@@ -157,7 +163,6 @@ client.on('message', async (msg) => {
 async function kirimNotifikasiMassal(jadwal) {
     console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
 
-    // HANYA AMBIL MAHASISWA YANG status_aktif BERVALUASI TRUE
     const { data: daftarMahasiswa, error } = await supabase
         .from('mahasiswa')
         .select('*')
