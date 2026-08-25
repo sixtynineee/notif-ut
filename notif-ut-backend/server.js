@@ -1,9 +1,9 @@
-const { Client, RemoteAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
-const { SupabaseStore } = require('wwebjs-supabase');
 const cron = require('node-cron');
 const http = require('http');
+const fs = require('fs');
 
 // =========================================================================
 // 0. DUMMY HTTP SERVER (Mencegah Port Timeout di Render Web Service)
@@ -17,28 +17,18 @@ http.createServer((req, res) => {
 });
 
 // =========================================================================
-// 1. KONFIGURASI SUPABASE & REMOTE STORE
+// 1. KONFIGURASI SUPABASE
 // =========================================================================
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://mzxrcslawziuvzqpwbjs.supabase.co";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Menyimpan Sesi WhatsApp ke Database Supabase secara permanen
-const store = new SupabaseStore({
-    client: supabase,
-    tableName: 'wa_sessions'
-});
-
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (RemoteAuth - Anti Scan Berulang)
+// 2. INISIALISASI BOT WHATSAPP (LocalAuth dengan Timeout Longgar)
 // =========================================================================
 const client = new Client({
-    authStrategy: new RemoteAuth({
-        clientId: 'notif-ut-session-v1',
-        store: store,
-        backupSyncIntervalMs: 60000
-    }),
-    qrMaxRetries: 5,
+    authStrategy: new LocalAuth({ clientId: "session-v2" }),
+    qrMaxRetries: 10,
     authTimeoutMs: 120000,
     puppeteer: {
         headless: true,
@@ -71,17 +61,13 @@ client.on('loading_screen', (percent, message) => {
 
 client.on('qr', (qr) => {
     console.log('\n========================================================');
-    console.log('📌 SCAN QR CODE DENGAN HP KAMU (CUKUP 1 KALI SELEMANYA):');
+    console.log('📌 QR CODE BARU BERHASIL DITERBITKAN! SCAN DENGAN HP KAMU:');
     console.log('========================================================\n');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('authenticated', () => {
-    console.log('🔑 Otentikasi Berhasil! Sesi sedang disimpan ke Supabase Database...');
-});
-
-client.on('remote_session_saved', () => {
-    console.log('💾 Sesi WhatsApp BERHASIL dicadangkan secara permanen ke Supabase Database!');
+    console.log('🔑 Otentikasi WhatsApp Berhasil!');
 });
 
 client.on('auth_failure', (msg) => {
@@ -90,6 +76,18 @@ client.on('auth_failure', (msg) => {
 
 client.on('ready', () => {
     console.log('\n✅ WhatsApp Client Berhasil Terhubung & Siap Mengirim Notifikasi!\n');
+});
+
+client.on('disconnected', (reason) => {
+    console.log('⚠️ Client terputus dari WhatsApp:', reason);
+    if (fs.existsSync('./.wwebjs_auth')) {
+        try {
+            fs.rmSync('./.wwebjs_auth', { recursive: true, force: true });
+            console.log('🗑️ Folder sesi lama berhasil dibersihkan.');
+        } catch (e) {
+            console.error('Gagal menghapus folder sesi:', e.message);
+        }
+    }
 });
 
 // =========================================================================
@@ -277,5 +275,5 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
-console.log('🚀 Memulai inisialisasi Puppeteer & WhatsApp Client (RemoteAuth)...');
+console.log('🚀 Memulai inisialisasi Puppeteer & WhatsApp Client...');
 client.initialize();
