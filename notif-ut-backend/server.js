@@ -3,6 +3,7 @@ const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const http = require('http');
+const fs = require('fs');
 
 // =========================================================================
 // 0. DUMMY HTTP SERVER (Mencegah Port Timeout di Render Web Service)
@@ -23,10 +24,10 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJva
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (Konfigurasi Puppeteer Stabil untuk Node 22)
+// 2. INISIALISASI BOT WHATSAPP (Sesi Baru "session-v2" untuk Memaksa QR Code)
 // =========================================================================
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({ clientId: "session-v2" }),
     puppeteer: {
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
@@ -47,13 +48,29 @@ const client = new Client({
     }
 });
 
+// Event ketika QR Code baru diterbitkan
 client.on('qr', (qr) => {
-    console.log('\n=== SCAN QR CODE DI BAWAH INI DENGAN WHATSAPP HP KAMU ===\n');
+    console.log('\n========================================================');
+    console.log('📌 QR CODE BARU BERHASIL DITERBITKAN! SCAN DENGAN HP KAMU:');
+    console.log('========================================================\n');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', () => {
     console.log('\n✅ WhatsApp Client Berhasil Terhubung & Siap Mengirim Notifikasi!\n');
+});
+
+// Penanganan otomatis jika terputus/logout dari HP
+client.on('disconnected', (reason) => {
+    console.log('⚠️ Client terputus dari WhatsApp:', reason);
+    if (fs.existsSync('./.wwebjs_auth')) {
+        try {
+            fs.rmSync('./.wwebjs_auth', { recursive: true, force: true });
+            console.log('🗑️ Folder sesi lama berhasil dibersihkan.');
+        } catch (e) {
+            console.error('Gagal menghapus folder sesi:', e.message);
+        }
+    }
 });
 
 // =========================================================================
@@ -243,4 +260,5 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
+console.log('🚀 Memulai inisialisasi Puppeteer & WhatsApp Client (Session v2)...');
 client.initialize();
