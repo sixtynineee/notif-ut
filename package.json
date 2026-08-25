@@ -10,6 +10,7 @@
     "@supabase/supabase-js": "^2.49.1",
     "node-cron": "^3.0.3",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main"
+    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main",
+    "wwebjs-supabase": "^1.0.1"
   }
 }
