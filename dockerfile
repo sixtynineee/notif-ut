@@ -22,4 +22,4 @@ RUN npm install
 
 COPY . .
 
-CMD ["node", "server.js"]
+CMD ["node", "notif-ut-backend/server.js"]
