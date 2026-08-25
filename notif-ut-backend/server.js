@@ -33,6 +33,14 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
+// Ignore uncaught Bad MAC / Session error agar server tidak crash
+process.on('uncaughtException', (err) => {
+    if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt'))) {
+        return;
+    }
+    console.error('❌ Uncaught Exception:', err);
+});
+
 // ==========================================
 // 3. INISIALISASI BOT WHATSAPP
 // ==========================================
@@ -49,7 +57,11 @@ async function startBot() {
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
-        emitOwnEvents: false
+        emitOwnEvents: false,
+        // Handler pencegah error Bad MAC saat sinkronisasi ulang
+        getMessage: async (key) => {
+            return { conversation: '' };
+        }
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -85,7 +97,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (FIXED FOR LID & DIRECT QUOTED REPLY)
+    // 4. AUTO-REPLY MESSAGES HANDLER
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         try {
@@ -94,11 +106,9 @@ async function startBot() {
             for (const msg of m.messages) {
                 if (!msg.message || msg.key.fromMe) continue;
 
-                // rawFrom bisa berupa @s.whatsapp.net maupun @lid
                 const rawFrom = msg.key.remoteJid;
-                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan Grup
+                if (!rawFrom || rawFrom.endsWith('@g.us')) continue;
 
-                // Ekstraksi Teks Pesan
                 const teks = (
                     msg.message.conversation ||
                     msg.message.extendedTextMessage?.text ||
@@ -107,7 +117,7 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // Ekstraksi Nomor HP Murni dari Metadata Payload
+                // Ekstraksi Nomor HP Murni
                 let phoneDigits = "";
                 if (msg.key.participant) {
                     phoneDigits = msg.key.participant.split('@')[0].split(':')[0];
@@ -179,7 +189,6 @@ async function startBot() {
                     });
                     balasanJadwal += `-----------------------------------\n_Ketik *STOP* untuk berhenti berlangganan._`;
 
-                    // Kirim balasan langsung ke rawFrom DENGAN { quoted: msg }
                     await sock.sendMessage(rawFrom, { text: balasanJadwal }, { quoted: msg });
                     console.log(`✅ [AUTO-REPLY JADWAL] Berhasil terkirim ke ${rawFrom}`);
                     continue;
@@ -190,7 +199,6 @@ async function startBot() {
                     `👉 *JADWAL* : Cek kalender jadwal Tuton 1 semester (Sesi 1-8).\n` +
                     `👉 *STOP* : Berhenti menerima notifikasi pengingat.`;
 
-                // Kirim balasan langsung ke rawFrom DENGAN { quoted: msg }
                 await sock.sendMessage(rawFrom, { text: pesanBantuan }, { quoted: msg });
                 console.log(`✅ [AUTO-REPLY FALLBACK] Berhasil terkirim ke ${rawFrom}`);
             }
@@ -232,7 +240,6 @@ async function kirimNotifikasiMassal(jadwal) {
         }
 
         try {
-            // Verifikasi pendaftaran nomor via server WA untuk mendapatkan JID yang valid
             const [result] = await sock.onWhatsApp(nomorBersih);
             
             if (!result || !result.exists) {
