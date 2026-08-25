@@ -24,14 +24,10 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJva
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (Dengan Cache Versi WA & Event Tracker)
+// 2. INISIALISASI BOT WHATSAPP (Anti-Crash & Bypass Headless Detection)
 // =========================================================================
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "session-v2" }),
-    webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
-    },
     puppeteer: {
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
@@ -47,7 +43,8 @@ const client = new Client({
             '--disable-component-update',
             '--disable-default-apps',
             '--mute-audio',
-            '--no-default-browser-check'
+            '--no-default-browser-check',
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ]
     }
 });
