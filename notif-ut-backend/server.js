@@ -24,7 +24,7 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJva
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (Ultra-Headless Config Anti-OOM Render 512MB)
+// 2. INISIALISASI BOT WHATSAPP (Penulisan Kredensial Lancar & Sesi Stabil)
 // =========================================================================
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "session-v2" }),
@@ -38,7 +38,6 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process',             // MENGGABUNGKAN PROSES CHROMIUM (MENGHEMAT 50% RAM)
             '--disable-gpu',
             '--disable-extensions',
             '--disable-component-update',
@@ -46,7 +45,7 @@ const client = new Client({
             '--mute-audio',
             '--no-default-browser-check',
             '--disable-site-isolation-trials',
-            '--disable-features=IsolateOrigins,site-per-process,Crashpad,MediaRouter',
+            '--disable-features=IsolateOrigins,site-per-process,Crashpad',
             '--blink-settings=imagesEnabled=false',
             '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ]
