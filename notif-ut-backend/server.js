@@ -24,10 +24,12 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJva
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (Penulisan Kredensial Lancar & Sesi Stabil)
+// 2. INISIALISASI BOT WHATSAPP (Timeout Longgar & Anti-Refresh Mendadak)
 // =========================================================================
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "session-v2" }),
+    qrMaxRetries: 5,                   // Percobaan ulang pemicuan QR
+    authTimeoutMs: 120000,             // Batas waktu tunggu otentikasi diperpanjang ke 2 menit
     puppeteer: {
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
