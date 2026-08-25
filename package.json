@@ -1,15 +1,20 @@
 {
   "name": "notif-ut-backend",
   "version": "1.0.0",
-  "description": "Backend WhatsApp Bot Pengingat Tuton UT",
+  "description": "Backend WhatsApp Bot Pengingat Tuton UT (Baileys Engine)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.1",
-    "node-cron": "^3.0.3",
-    "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main"
+    "@hapi/boom": "^10.0.1",
+    "@supabase/supabase-js": "^2.112.3",
+    "@whiskeysockets/baileys": "^6.7.18",
+    "node-cron": "^4.6.0",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
   }
 }
