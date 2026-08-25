@@ -33,7 +33,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
-// Ignore uncaught Bad MAC / Session error agar server tidak crash
+// Abaikan error enkripsi Signal internal agar server tidak restart/crash
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt'))) {
         return;
@@ -58,7 +58,6 @@ async function startBot() {
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
         emitOwnEvents: false,
-        // Handler pencegah error Bad MAC saat sinkronisasi ulang
         getMessage: async (key) => {
             return { conversation: '' };
         }
@@ -117,7 +116,6 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // Ekstraksi Nomor HP Murni
                 let phoneDigits = "";
                 if (msg.key.participant) {
                     phoneDigits = msg.key.participant.split('@')[0].split(':')[0];
@@ -134,7 +132,6 @@ async function startBot() {
 
                 console.log(`📩 [PESAN MASUK] Raw JID: ${rawFrom} | Nomor HP: ${nomor62} | Teks: "${teks}"`);
 
-                // Kueri Nama Mahasiswa dari Database Supabase
                 let namaUser = 'Mahasiswa UT';
                 if (nomor62 && !nomor62.startsWith('2192')) {
                     const { data } = await supabase
@@ -209,13 +206,16 @@ async function startBot() {
 }
 
 // ==========================================
-// 5. LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI)
+// 5. LOGIKA PENGIRIMAN PESAN MASSAL (FIXED FOR DIRECT SCHEDULER DELIVERY)
 // ==========================================
 async function kirimNotifikasiMassal(jadwal) {
     if (!sock || !isReady) {
         console.log('⚠️ Sesi WhatsApp belum siap, menunda pengiriman notifikasi...');
         return;
     }
+
+    // Kunci status di Supabase segera agar tidak terkirim ganda oleh Cronjob
+    await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
 
     console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
 
@@ -239,26 +239,21 @@ async function kirimNotifikasiMassal(jadwal) {
             nomorBersih = '62' + nomorBersih.slice(1);
         }
 
+        // Tentukan JID tujuan langsung berbasis nomor HP Indonesia (@s.whatsapp.net)
+        const targetJid = `${nomorBersih}@s.whatsapp.net`;
+
+        let headerNotif = "📢 [NOTIF-UT] Pengingat Sesi Baru";
+        if (jadwal.tipe_pengingat === "H-7 DEADLINE") headerNotif = "🗓️ [NOTIF-UT] Pengingat H-7 Deadline";
+        else if (jadwal.tipe_pengingat === "H-3 DEADLINE") headerNotif = "⚠️ [NOTIF-UT] Pengingat H-3 Deadline";
+        else if (jadwal.tipe_pengingat === "H-1 DEADLINE") headerNotif = "⏰ [NOTIF-UT] Peringatan BESOK DEADLINE!";
+        else if (jadwal.tipe_pengingat === "HARI-H DEADLINE") headerNotif = "🚨🔥 [NOTIF-UT] LAST CHANCE - DEADLINE HARI INI!";
+
+        const pesan = `${headerNotif}\n\nHalo *${mhs.nama}* (${mhs.jurusan}),\nBerikut pengingat batas waktu untuk *${jadwal.nama_sesi}*:\n\n📘 Deadline Sesi : _${jadwal.deadline_non_praktik}_\n\n⚠️ _Segera selesaikan dan unggah tugas/diskusi kamu di elearning.ut.ac.id sebelum pukul 23.59 WIB!_\n-----------------------------------\n_Ketik *JADWAL* untuk cek kalender lengkap | Ketik *STOP* untuk berhenti._`;
+
         try {
-            const [result] = await sock.onWhatsApp(nomorBersih);
-            
-            if (!result || !result.exists) {
-                console.error(`❌ Nomor ${nomorBersih} tidak terdaftar di WhatsApp.`);
-                continue;
-            }
-
-            const targetJid = result.jid;
-
-            let headerNotif = "📢 [NOTIF-UT] Pengingat Sesi Baru";
-            if (jadwal.tipe_pengingat === "H-7 DEADLINE") headerNotif = "🗓️ [NOTIF-UT] Pengingat H-7 Deadline";
-            else if (jadwal.tipe_pengingat === "H-3 DEADLINE") headerNotif = "⚠️ [NOTIF-UT] Pengingat H-3 Deadline";
-            else if (jadwal.tipe_pengingat === "H-1 DEADLINE") headerNotif = "⏰ [NOTIF-UT] Peringatan BESOK DEADLINE!";
-            else if (jadwal.tipe_pengingat === "HARI-H DEADLINE") headerNotif = "🚨🔥 [NOTIF-UT] LAST CHANCE - DEADLINE HARI INI!";
-
-            const pesan = `${headerNotif}\n\nHalo *${mhs.nama}* (${mhs.jurusan}),\nBerikut pengingat batas waktu untuk *${jadwal.nama_sesi}*:\n\n📘 Deadline Sesi : _${jadwal.deadline_non_praktik}_\n\n⚠️ _Segera selesaikan dan unggah tugas/diskusi kamu di elearning.ut.ac.id sebelum pukul 23.59 WIB!_\n-----------------------------------\n_Ketik *JADWAL* untuk cek kalender lengkap | Ketik *STOP* untuk berhenti._`;
-
+            // Langsung kirim pesan tanpa memfilter via sock.onWhatsApp yang sering drop JID
             await sock.sendMessage(targetJid, { text: pesan });
-            console.log(`✅ Pesan terkirim ke: ${mhs.nama} (${nomorBersih})`);
+            console.log(`✅ Pesan notifikasi scheduler terkirim ke: ${mhs.nama} (${targetJid})`);
 
             await supabase.from('log_pengiriman').insert([{
                 mahasiswa_id: mhs.id,
@@ -272,8 +267,6 @@ async function kirimNotifikasiMassal(jadwal) {
 
         await sleep(2000);
     }
-
-    await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
 }
 
 // ==========================================
