@@ -94,8 +94,8 @@ async function startBot() {
             for (const msg of m.messages) {
                 if (!msg.message || msg.key.fromMe) continue;
 
-                const from = msg.key.remoteJid;
-                if (!from || from.endsWith('@g.us')) continue; // Mengabaikan Grup
+                const rawFrom = msg.key.remoteJid;
+                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Mengabaikan Grup
 
                 // Ekstraksi Teks Pesan
                 const teks = (
@@ -106,14 +106,28 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // Ekstraksi Nomor HP Asli
-                let rawNumber = from.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+                // Ambil ID peserta asli jika ada
+                const participantJid = msg.key.participant || msg.participant || rawFrom;
+
+                // Ekstraksi Angka Murni Nomor HP
+                let rawNumber = participantJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
 
                 let nomor62 = rawNumber.startsWith('0') ? '62' + rawNumber.slice(1) : rawNumber;
                 let nomor08 = rawNumber.startsWith('62') ? '0' + rawNumber.slice(2) : rawNumber;
                 let nomorPlus62 = '+' + nomor62;
 
-                console.log(`📩 [PESAN MASUK] Dari JID: ${from} | Teks: "${teks}"`);
+                // KOVERSI MANDATORI: Dari ID @lid ke JID Ponsel Murni (@s.whatsapp.net)
+                let targetJid = rawFrom;
+                if (rawFrom.endsWith('@lid') || !rawFrom.endsWith('@s.whatsapp.net')) {
+                    if (!nomor62.startsWith('2192')) {
+                        const [result] = await sock.onWhatsApp(nomor62);
+                        if (result && result.jid) {
+                            targetJid = result.jid;
+                        }
+                    }
+                }
+
+                console.log(`📩 [PESAN MASUK] JID Asli: ${rawFrom} | Target Balas: ${targetJid} | Teks: "${teks}"`);
 
                 // Kueri Nama Mahasiswa dari Database Supabase
                 let namaUser = 'Mahasiswa UT';
@@ -141,11 +155,11 @@ async function startBot() {
 
                     if (error) {
                         console.error('❌ [DATABASE ERROR]:', error.message);
-                        await sock.sendMessage(from, { text: '❌ Gagal memproses penonaktifan. Silakan coba lagi nanti.' }, { quoted: msg });
+                        await sock.sendMessage(targetJid, { text: '❌ Gagal memproses penonaktifan. Silakan coba lagi nanti.' });
                     } else if (!data || data.length === 0) {
-                        await sock.sendMessage(from, { text: '🛑 Nomor Anda tidak terdaftar di sistem pendaftaran.' }, { quoted: msg });
+                        await sock.sendMessage(targetJid, { text: '🛑 Nomor Anda tidak terdaftar di sistem pendaftaran.' });
                     } else {
-                        await sock.sendMessage(from, { text: '🛑 *Layanan Notifikasi Diberhentikan.*\n\nAnda tidak akan menerima pengingat jadwal Tuton UT lagi. Jika ingin mendaftar ulang, silakan akses kembali website pendaftaran.' }, { quoted: msg });
+                        await sock.sendMessage(targetJid, { text: '🛑 *Layanan Notifikasi Diberhentikan.*\n\nAnda tidak akan menerima pengingat jadwal Tuton UT lagi. Jika ingin mendaftar ulang, silakan akses kembali website pendaftaran.' });
                     }
                     continue;
                 }
@@ -159,7 +173,7 @@ async function startBot() {
                         .order('id', { ascending: true });
 
                     if (error || !daftarJadwal || daftarJadwal.length === 0) {
-                        await sock.sendMessage(from, { text: `Halo *${namaUser}*,\n\nSaat ini daftar jadwal Tuton 1 semester belum tersedia di database.` }, { quoted: msg });
+                        await sock.sendMessage(targetJid, { text: `Halo *${namaUser}*,\n\nSaat ini daftar jadwal Tuton 1 semester belum tersedia di database.` });
                         continue;
                     }
 
@@ -170,18 +184,18 @@ async function startBot() {
                     });
                     balasanJadwal += `-----------------------------------\n_Ketik *STOP* untuk berhenti berlangganan._`;
 
-                    await sock.sendMessage(from, { text: balasanJadwal }, { quoted: msg });
-                    console.log(`✅ [AUTO-REPLY JADWAL] Terkirim ke ${from}`);
+                    await sock.sendMessage(targetJid, { text: balasanJadwal });
+                    console.log(`✅ [AUTO-REPLY JADWAL] Terkirim ke ${targetJid}`);
                     continue;
                 }
 
-                // C. BANTUAN / FALLBACK UNTUK PESAN SEMBARANGAN (TERMASUK 'TES', 'HALO', DLL)
+                // C. BANTUAN / FALLBACK UNTUK PESAN SEMBARANGAN
                 const pesanBantuan = `🤖 *[BOT NOTIF-UT]*\n\nHalo *${namaUser}*! Saya adalah bot pengingat otomatis Tuton UT. Kata kunci yang dapat kamu gunakan:\n\n` +
                     `👉 *JADWAL* : Cek kalender jadwal Tuton 1 semester (Sesi 1-8).\n` +
                     `👉 *STOP* : Berhenti menerima notifikasi pengingat.`;
 
-                await sock.sendMessage(from, { text: pesanBantuan }, { quoted: msg });
-                console.log(`✅ [AUTO-REPLY FALLBACK] Terkirim ke ${from}`);
+                await sock.sendMessage(targetJid, { text: pesanBantuan });
+                console.log(`✅ [AUTO-REPLY FALLBACK] Terkirim ke ${targetJid}`);
             }
         } catch (err) {
             console.error('❌ Error Handling Message:', err);
