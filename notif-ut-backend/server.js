@@ -11,12 +11,12 @@ const http = require('http');
 const pino = require('pino');
 
 // ==========================================
-// 1. SERVER HEALTH-CHECK (DUMMY HTTP FOR RENDER 24/7)
+// 1. SERVER HEALTH-CHECK (DUMMY HTTP FOR RENDER)
 // ==========================================
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot UT WhatsApp (Baileys Engine) is Alive & Running 24/7!\n');
+    res.end('Bot UT WhatsApp (Baileys Engine) is Active & Running 24/7!\n');
 }).listen(PORT, () => {
     console.log(`🌐 Health-Check Server berjalan di port ${PORT}`);
 });
@@ -45,7 +45,7 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ['Notif-UT Business', 'Chrome', '1.0.0'],
+        browser: ['Notif-UT Bot', 'Chrome', '1.0.0'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -68,7 +68,7 @@ async function startBot() {
             console.log(`⚠️ Koneksi terputus (Reason Code: ${statusCode})`);
 
             if (statusCode === 515 || statusCode === DisconnectReason.restartRequired) {
-                console.log('🔄 [RESTART REQUIRED] Melakukan koneksi ulang untuk menyinkronkan sesi...');
+                console.log('🔄 [RESTART REQUIRED] Menghubungkan ulang untuk menyinkronkan sesi...');
                 setTimeout(() => startBot(), 2000);
             } else if (statusCode !== DisconnectReason.loggedOut) {
                 console.log('🔄 Reconnecting otomatis...');
@@ -85,7 +85,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (FIX TARGET JID LID TO PHONE JID)
+    // 4. AUTO-REPLY MESSAGES HANDLER (SOLUSI FIX REPLAY PESAN @lid)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         try {
@@ -95,7 +95,7 @@ async function startBot() {
                 if (!msg.message || msg.key.fromMe) continue;
 
                 const rawFrom = msg.key.remoteJid;
-                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Mengabaikan Grup
+                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan grup
 
                 // Ekstraksi Teks Pesan
                 const teks = (
@@ -106,46 +106,38 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Dapatkan Nomor HP Asli Pengirim dari Payload Mentah WhatsApp
-                let realPhoneNumber = "";
-
+                // EKSTRAKSI NOMOR HP ASLI DARI PAYLOAD WHATSAPP
+                let phoneDigits = "";
+                
                 if (msg.key.participant) {
-                    realPhoneNumber = msg.key.participant.split('@')[0].split(':')[0];
+                    phoneDigits = msg.key.participant.split('@')[0].split(':')[0];
                 } else if (msg.key.remoteJidAlt) {
-                    realPhoneNumber = msg.key.remoteJidAlt.split('@')[0].split(':')[0];
-                } else if (rawFrom.endsWith('@s.whatsapp.net')) {
-                    realPhoneNumber = rawFrom.split('@')[0].split(':')[0];
+                    phoneDigits = msg.key.remoteJidAlt.split('@')[0].split(':')[0];
                 } else {
-                    // Jika dikirim via LID tanpa metadata nomor HP, ambil dari database Supabase mahasiswa aktif
-                    const { data: mhsExist } = await supabase
-                        .from('mahasiswa')
-                        .select('nomor_wa')
-                        .eq('status_aktif', true)
-                        .maybeSingle();
-
-                    if (mhsExist && mhsExist.nomor_wa) {
-                        realPhoneNumber = String(mhsExist.nomor_wa).replace(/[^0-9]/g, '');
-                    }
+                    phoneDigits = rawFrom.split('@')[0].split(':')[0];
                 }
 
-                // Normalisasi Format Nomor Indonesia
-                let nomorMurni = realPhoneNumber.replace(/[^0-9]/g, '');
-                let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
-                let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
+                let nomorBersih = phoneDigits.replace(/[^0-9]/g, '');
+                let nomor62 = nomorBersih.startsWith('0') ? '62' + nomorBersih.slice(1) : nomorBersih;
+                let nomor08 = nomorBersih.startsWith('62') ? '0' + nomorBersih.slice(2) : nomorBersih;
                 let nomorPlus62 = '+' + nomor62;
 
-                // 2. Tentukan Target JID Murni (@s.whatsapp.net)
+                // TENTUKAN TARGET JID BALASAN
                 let targetJid = rawFrom;
-                if (nomor62.length >= 10 && !nomor62.startsWith('2192')) {
-                    const [resWA] = await sock.onWhatsApp(nomor62);
-                    if (resWA && resWA.exists) {
-                        targetJid = resWA.jid; // JID Ponsel Asli (@s.whatsapp.net)
-                    } else {
-                        targetJid = `${nomor62}@s.whatsapp.net`;
+
+                // Jika pengirim berasal dari ID LID, cari JID ponsel resminya (@s.whatsapp.net)
+                if (rawFrom.endsWith('@lid')) {
+                    if (nomor62.length >= 10 && !nomor62.startsWith('2192')) {
+                        const [resWA] = await sock.onWhatsApp(nomor62);
+                        if (resWA && resWA.exists) {
+                            targetJid = resWA.jid;
+                        } else {
+                            targetJid = `${nomor62}@s.whatsapp.net`;
+                        }
                     }
                 }
 
-                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Nomor HP Asli: ${nomor62} | Target Balas: ${targetJid} | Teks: "${teks}"`);
+                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Nomor: ${nomor62} | Target Kirim: ${targetJid} | Teks: "${teks}"`);
 
                 // Kueri Nama Mahasiswa dari Database Supabase
                 let namaUser = 'Mahasiswa UT';
@@ -203,7 +195,7 @@ async function startBot() {
                     balasanJadwal += `-----------------------------------\n_Ketik *STOP* untuk berhenti berlangganan._`;
 
                     await sock.sendMessage(targetJid, { text: balasanJadwal });
-                    console.log(`✅ [AUTO-REPLY JADWAL] Terkirim ke ${targetJid}`);
+                    console.log(`✅ [AUTO-REPLY JADWAL] Berhasil terkirim ke ${targetJid}`);
                     continue;
                 }
 
@@ -213,7 +205,7 @@ async function startBot() {
                     `👉 *STOP* : Berhenti menerima notifikasi pengingat.`;
 
                 await sock.sendMessage(targetJid, { text: pesanBantuan });
-                console.log(`✅ [AUTO-REPLY FALLBACK] Terkirim ke ${targetJid}`);
+                console.log(`✅ [AUTO-REPLY FALLBACK] Berhasil terkirim ke ${targetJid}`);
             }
         } catch (err) {
             console.error('❌ Error Handling Message:', err);
@@ -253,7 +245,6 @@ async function kirimNotifikasiMassal(jadwal) {
         }
 
         try {
-            // Verifikasi nomor via Server WA
             const [result] = await sock.onWhatsApp(nomorBersih);
             
             if (!result || !result.exists) {
@@ -284,7 +275,7 @@ async function kirimNotifikasiMassal(jadwal) {
             console.error(`❌ Gagal mengirim ke ${nomorBersih}:`, err.message || err);
         }
 
-        await sleep(2000); // Delay 2 detik antar pengiriman
+        await sleep(2000);
     }
 
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
@@ -311,5 +302,5 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
-// Start Engine
+// Start Bot Engine
 startBot();
