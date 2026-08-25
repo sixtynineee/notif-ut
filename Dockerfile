@@ -1,17 +1,17 @@
 FROM node:18-slim
 
-# Install dependencies yang dibutuhkan Puppeteer & Chrome di Linux
+# Install Chromium dan pustaka pendukung resmi Debian Bookworm
 RUN apt-get update && apt-get install -y \
     chromium \
-    nss \
-    freetype \
-    harfbuzz \
+    libnss3 \
+    libfreetype6 \
+    libharfbuzz0b \
     ca-certificates \
     fonts-freefont-ttf \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Beritahu Puppeteer untuk menggunakan Chromium sistem
+# Konfigurasi Puppeteer untuk menggunakan Chromium sistem
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
