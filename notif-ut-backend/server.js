@@ -2,47 +2,17 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
-const http = require('http');
-const fs = require('fs');
 
-// =========================================================================
-// 0. DUMMY HTTP SERVER (Mencegah Port Timeout di Render Web Service)
-// =========================================================================
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('NOTIF-UT Bot is running active!\n');
-}).listen(PORT, () => {
-    console.log(`🌐 Dummy Web Server berjalan di port ${PORT}`);
-});
-
-// =========================================================================
-// 1. KONFIGURASI SUPABASE
-// =========================================================================
-const SUPABASE_URL = process.env.SUPABASE_URL || "https://mzxrcslawziuvzqpwbjs.supabase.co";
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
+//KONFIGURASI SUPABASE
+const SUPABASE_URL = "https://mzxrcslawziuvzqpwbjs.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (Sesi Clean & Auto-Reset Folder Sesi)
-// =========================================================================
-// Pembersihan otomatis folder cache sesi jika ada sisa handshaking yang tertinggal
-if (fs.existsSync('./.wwebjs_auth')) {
-    try {
-        fs.rmSync('./.wwebjs_auth', { recursive: true, force: true });
-        console.log('🧹 Menghapus folder sesi lama untuk reset otentikasi bersih...');
-    } catch (e) {
-        console.error('Gagal hapus folder sesi:', e.message);
-    }
-}
-
+//INISIALISASI BOT WHATSAPP (Konfigurasi Puppeteer Stabil)
 const client = new Client({
-    authStrategy: new LocalAuth({ clientId: "session-v3" }),
-    qrMaxRetries: 5,
-    authTimeoutMs: 120000,
+    authStrategy: new LocalAuth(),
     puppeteer: {
         headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -51,65 +21,30 @@ const client = new Client({
             '--no-first-run',
             '--no-zygote',
             '--disable-gpu',
-            '--disable-extensions',
-            '--disable-component-update',
-            '--disable-default-apps',
-            '--mute-audio',
-            '--no-default-browser-check',
-            '--disable-site-isolation-trials',
-            '--disable-features=IsolateOrigins,site-per-process,Crashpad',
-            '--blink-settings=imagesEnabled=false',
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            '--single-process'
         ]
     }
 });
 
-// INDIKATOR EVENT MONITORING
-client.on('loading_screen', (percent, message) => {
-    console.log(`⏳ Memuat WhatsApp Web: ${percent}% - ${message}`);
-});
-
 client.on('qr', (qr) => {
-    console.log('\n========================================================');
-    console.log('📌 QR CODE BARU BERHASIL DITERBITKAN! SCAN DENGAN HP KAMU:');
-    console.log('========================================================\n');
+    console.log('\n=== SCAN QR CODE DI BAWAH INI DENGAN WHATSAPP HP KAMU ===\n');
     qrcode.generate(qr, { small: true });
-});
-
-client.on('authenticated', () => {
-    console.log('🔑 Otentikasi WhatsApp Berhasil!');
-});
-
-client.on('auth_failure', (msg) => {
-    console.error('❌ Otentikasi Gagal:', msg);
 });
 
 client.on('ready', () => {
     console.log('\n✅ WhatsApp Client Berhasil Terhubung & Siap Mengirim Notifikasi!\n');
 });
 
-client.on('disconnected', (reason) => {
-    console.log('⚠️ Client terputus dari WhatsApp:', reason);
-    if (fs.existsSync('./.wwebjs_auth')) {
-        try {
-            fs.rmSync('./.wwebjs_auth', { recursive: true, force: true });
-            console.log('🗑️ Folder sesi lama berhasil dibersihkan.');
-        } catch (e) {
-            console.error('Gagal menghapus folder sesi:', e.message);
-        }
-    }
-});
-
-// =========================================================================
-// 3. FITUR INTERAKTIF: AUTO-REPLY (STOP, JADWAL, & FALLBACK)
-// =========================================================================
+//FITUR INTERAKTIF: AUTO-REPLY (STOP, JADWAL, & FALLBACK)
 client.on('message', async (msg) => {
     if (msg.from.endsWith('@g.us')) return;
 
     const teks = msg.body.trim().toUpperCase();
 
     // EKSTRAKSI NOMOR HP ASLI DARI PAYLOAD MENTAH WHATSAPP (_data)
+    // Mengabaikan ID internal @lid (2192...) dan mengambil JID HP asli
     let rawJid = "";
+    
     if (msg._data && msg._data.from && msg._data.from.endsWith('@c.us')) {
         rawJid = msg._data.from;
     } else if (msg._data && msg._data.author && msg._data.author.endsWith('@c.us')) {
@@ -200,12 +135,11 @@ client.on('message', async (msg) => {
     await msg.reply(pesanBantuan);
 });
 
-// =========================================================================
-// 4. LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI)
-// =========================================================================
+//LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI)
 async function kirimNotifikasiMassal(jadwal) {
     console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
 
+    // HANYA AMBIL MAHASISWA YANG status_aktif BERVALUASI TRUE
     const { data: daftarMahasiswa, error } = await supabase
         .from('mahasiswa')
         .select('*')
@@ -267,10 +201,7 @@ _Ketik *JADWAL* untuk cek kalender lengkap | Ketik *STOP* untuk berhenti._`;
 
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
 }
-
-// =========================================================================
-// 5. CRONJOB SCHEDULER
-// =========================================================================
+// CRONJOB SCHEDULER
 cron.schedule('* * * * *', async () => {
     const sekarang = new Date().toISOString();
 
@@ -287,5 +218,4 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
-console.log('🚀 Memulai inisialisasi Puppeteer & WhatsApp Client...');
 client.initialize();
