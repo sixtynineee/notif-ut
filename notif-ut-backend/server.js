@@ -3,16 +3,21 @@ const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 
-//KONFIGURASI SUPABASE
-const SUPABASE_URL = "https://mzxrcslawziuvzqpwbjs.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
+// =========================================================================
+// 1. KONFIGURASI SUPABASE
+// =========================================================================
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://mzxrcslawziuvzqpwbjs.supabase.co";
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-//INISIALISASI BOT WHATSAPP (Konfigurasi Puppeteer Stabil)
+// =========================================================================
+// 2. INISIALISASI BOT WHATSAPP (Optimasi Ringan RAM untuk Render/Cloud)
+// =========================================================================
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
         headless: true,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -21,11 +26,20 @@ const client = new Client({
             '--no-first-run',
             '--no-zygote',
             '--disable-gpu',
-            '--single-process'
+            '--single-process',          // Sangat menghemat penggunaan RAM
+            '--disable-extensions',
+            '--disable-component-update',
+            '--disable-background-networking',
+            '--disable-sync',
+            '--metrics-recording-only',
+            '--disable-default-apps',
+            '--mute-audio',
+            '--no-default-browser-check'
         ]
     }
 });
 
+// Tampilan QR Code Terminal Ringkas & Rapi
 client.on('qr', (qr) => {
     console.log('\n=== SCAN QR CODE DI BAWAH INI DENGAN WHATSAPP HP KAMU ===\n');
     qrcode.generate(qr, { small: true });
@@ -35,7 +49,9 @@ client.on('ready', () => {
     console.log('\n✅ WhatsApp Client Berhasil Terhubung & Siap Mengirim Notifikasi!\n');
 });
 
-//FITUR INTERAKTIF: AUTO-REPLY (STOP, JADWAL, & FALLBACK)
+// =========================================================================
+// 3. FITUR INTERAKTIF: AUTO-REPLY (STOP, JADWAL, & FALLBACK)
+// =========================================================================
 client.on('message', async (msg) => {
     if (msg.from.endsWith('@g.us')) return;
 
@@ -135,7 +151,9 @@ client.on('message', async (msg) => {
     await msg.reply(pesanBantuan);
 });
 
-//LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI)
+// =========================================================================
+// 4. LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI)
+// =========================================================================
 async function kirimNotifikasiMassal(jadwal) {
     console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
 
@@ -201,7 +219,10 @@ _Ketik *JADWAL* untuk cek kalender lengkap | Ketik *STOP* untuk berhenti._`;
 
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
 }
-// CRONJOB SCHEDULER
+
+// =========================================================================
+// 5. CRONJOB SCHEDULER
+// =========================================================================
 cron.schedule('* * * * *', async () => {
     const sekarang = new Date().toISOString();
 
