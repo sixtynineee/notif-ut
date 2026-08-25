@@ -85,7 +85,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER
+    // 4. AUTO-REPLY MESSAGES HANDLER (FIX TARGET JID LID TO PHONE JID)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         try {
@@ -106,32 +106,50 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // Ambil ID peserta asli jika ada
-                const participantJid = msg.key.participant || msg.participant || rawFrom;
+                // 1. Dapatkan Nomor HP Asli Pengirim dari Payload Mentah WhatsApp
+                let realPhoneNumber = "";
 
-                // Ekstraksi Angka Murni Nomor HP
-                let rawNumber = participantJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+                if (msg.key.participant) {
+                    realPhoneNumber = msg.key.participant.split('@')[0].split(':')[0];
+                } else if (msg.key.remoteJidAlt) {
+                    realPhoneNumber = msg.key.remoteJidAlt.split('@')[0].split(':')[0];
+                } else if (rawFrom.endsWith('@s.whatsapp.net')) {
+                    realPhoneNumber = rawFrom.split('@')[0].split(':')[0];
+                } else {
+                    // Jika dikirim via LID tanpa metadata nomor HP, ambil dari database Supabase mahasiswa aktif
+                    const { data: mhsExist } = await supabase
+                        .from('mahasiswa')
+                        .select('nomor_wa')
+                        .eq('status_aktif', true)
+                        .maybeSingle();
 
-                let nomor62 = rawNumber.startsWith('0') ? '62' + rawNumber.slice(1) : rawNumber;
-                let nomor08 = rawNumber.startsWith('62') ? '0' + rawNumber.slice(2) : rawNumber;
-                let nomorPlus62 = '+' + nomor62;
-
-                // KOVERSI MANDATORI: Dari ID @lid ke JID Ponsel Murni (@s.whatsapp.net)
-                let targetJid = rawFrom;
-                if (rawFrom.endsWith('@lid') || !rawFrom.endsWith('@s.whatsapp.net')) {
-                    if (!nomor62.startsWith('2192')) {
-                        const [result] = await sock.onWhatsApp(nomor62);
-                        if (result && result.jid) {
-                            targetJid = result.jid;
-                        }
+                    if (mhsExist && mhsExist.nomor_wa) {
+                        realPhoneNumber = String(mhsExist.nomor_wa).replace(/[^0-9]/g, '');
                     }
                 }
 
-                console.log(`📩 [PESAN MASUK] JID Asli: ${rawFrom} | Target Balas: ${targetJid} | Teks: "${teks}"`);
+                // Normalisasi Format Nomor Indonesia
+                let nomorMurni = realPhoneNumber.replace(/[^0-9]/g, '');
+                let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
+                let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
+                let nomorPlus62 = '+' + nomor62;
+
+                // 2. Tentukan Target JID Murni (@s.whatsapp.net)
+                let targetJid = rawFrom;
+                if (nomor62.length >= 10 && !nomor62.startsWith('2192')) {
+                    const [resWA] = await sock.onWhatsApp(nomor62);
+                    if (resWA && resWA.exists) {
+                        targetJid = resWA.jid; // JID Ponsel Asli (@s.whatsapp.net)
+                    } else {
+                        targetJid = `${nomor62}@s.whatsapp.net`;
+                    }
+                }
+
+                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Nomor HP Asli: ${nomor62} | Target Balas: ${targetJid} | Teks: "${teks}"`);
 
                 // Kueri Nama Mahasiswa dari Database Supabase
                 let namaUser = 'Mahasiswa UT';
-                if (!nomor62.startsWith('2192')) {
+                if (!nomor62.startsWith('2192') && nomor62.length >= 10) {
                     const { data } = await supabase
                         .from('mahasiswa')
                         .select('nama')
@@ -266,7 +284,7 @@ async function kirimNotifikasiMassal(jadwal) {
             console.error(`❌ Gagal mengirim ke ${nomorBersih}:`, err.message || err);
         }
 
-        await sleep(2000); // Delay 2 detik
+        await sleep(2000); // Delay 2 detik antar pengiriman
     }
 
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
