@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOTIF-UT - Pengingat Jadwal Tuton UT</title>
+    <!-- Import Supabase JS Client & FontAwesome Icon -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --primary: #0056b3;
+            --primary-hover: #004085;
+            --secondary: #25d366;
+            --secondary-hover: #1ebd56;
+            --dark: #212529;
+            --light-bg: #f4f7f6;
+            --card-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--light-bg);
+            color: var(--dark);
+            line-height: 1.6;
+        }
+
+        header {
+            background: linear-gradient(135deg, #0056b3 0%, #003366 100%);
+            color: white;
+            padding: 40px 20px 50px 20px;
+            text-align: center;
+        }
+
+        header h1 { 
+            margin: 0; 
+            font-size: 32px; 
+            font-weight: 800;
+            letter-spacing: 1px;
+        }
+
+        header p { 
+            margin-top: 10px; 
+            opacity: 0.9; 
+            font-size: 16px; 
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .container {
+            max-width: 720px;
+            margin: -30px auto 50px auto;
+            padding: 0 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: var(--card-shadow);
+            margin-bottom: 25px;
+            border: 1px solid rgba(0,0,0,0.03);
+        }
+
+        .card h2 {
+            color: var(--primary);
+            margin-top: 0;
+            font-size: 20px;
+            font-weight: 700;
+            border-bottom: 2px solid #f0f4f8;
+            padding-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Form Styling */
+        .form-group { margin-bottom: 18px; }
+        label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 14px; color: #444; }
+        
+        input {
+            width: 100%;
+            padding: 13px 15px;
+            border: 1.5 solid #dce2e6;
+            border-radius: 8px;
+            box-sizing: border-box;
+            font-size: 15px;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            background-color: #fdfdfd;
+        }
+        
+        input:focus { 
+            outline: none; 
+            border-color: var(--primary); 
+            box-shadow: 0 0 0 3px rgba(0, 86, 179, 0.15);
+            background-color: #fff;
+        }
+
+        .btn-submit {
+            width: 100%;
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 15px;
+            font-size: 16px;
+            font-weight: 700;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-submit:hover { background-color: var(--primary-hover); }
+        .btn-submit:active { transform: scale(0.99); }
+        .btn-submit:disabled { background-color: #a0b2c6; cursor: not-allowed; }
+
+        /* Direct Chat Button WA */
+        .btn-wa-direct {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            width: 100%;
+            background-color: var(--secondary);
+            color: white;
+            text-decoration: none;
+            padding: 14px;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 15px;
+            margin-top: 15px;
+            box-sizing: border-box;
+            transition: background 0.2s;
+        }
+
+        .btn-wa-direct:hover { background-color: var(--secondary-hover); }
+
+        /* Alert Box */
+        #alert-box {
+            display: none;
+            padding: 14px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            font-weight: 500;
+            text-align: center;
+        }
+        .alert-success { background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
+        .alert-error { background-color: #f8d7da; color: #842029; border: 1px solid #f5c2c7; }
+
+        /* Panduan Layanan */
+        .step-list { display: flex; flex-direction: column; gap: 16px; margin-top: 15px; }
+        .step { display: flex; align-items: flex-start; gap: 15px; }
+        .step-number {
+            background: #e6f0fa;
+            color: var(--primary);
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+        .step-text { font-size: 14px; color: #495057; }
+
+        /* WA Preview Box */
+        .wa-box {
+            background-color: #e5ddd5;
+            padding: 18px;
+            border-radius: 10px;
+            background-image: radial-gradient(#d4c7b8 1px, transparent 0);
+            background-size: 12px 12px;
+        }
+        .wa-bubble {
+            background: white;
+            padding: 14px;
+            border-radius: 8px;
+            font-size: 13.5px;
+            line-height: 1.5;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+            white-space: pre-line;
+            color: #111;
+        }
+
+        .footer { 
+            text-align: center; 
+            font-size: 13px; 
+            color: #6c757d; 
+            margin-top: 30px; 
+            padding-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>NOTIF-UT</h1>
+        <p>Pengingat Otomatis Sesi & Deadline Tuton Universitas Terbuka via WhatsApp</p>
+    </header>
+
+    <div class="container">
+        
+        <!-- Form Pendaftaran -->
+        <div class="card">
+            <h2><i class="fa-solid fa-user-plus"></i> Aktifkan Pengingat WA</h2>
+            <div id="alert-box"></div>
+            
+            <form id="formRegistrasi">
+                <div class="form-group">
+                    <label for="nama">Nama Lengkap</label>
+                    <input type="text" id="nama" placeholder="Masukkan nama lengkapmu" required>
+                </div>
+                <div class="form-group">
+                    <label for="jurusan">Program Studi / Jurusan</label>
+                    <input type="text" id="jurusan" placeholder="Contoh: Sistem Informasi" required>
+                </div>
+                <div class="form-group">
+                    <label for="nomorWa">Nomor WhatsApp (Aktif)</label>
+                    <input type="tel" id="nomorWa" placeholder="Contoh: 083148834649" required>
+                </div>
+                <button type="button" class="btn-submit" id="btnDaftar" onclick="simpanKeSupabase()">
+                    <i class="fa-solid fa-bell"></i> Daftar Notifikasi Otomatis
+                </button>
+            </form>
+
+            <div style="text-align: center; margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
+                <p style="font-size: 13px; color: #666; margin-bottom: 8px;">Sudah terdaftar dan ingin cek jadwal langsung?</p>
+                <a href="https://wa.me/6283148834649?text=JADWAL" target="_blank" class="btn-wa-direct">
+                    <i class="fa-brands fa-whatsapp" style="font-size: 20px;"></i> Chat Bot WA Center (Cek JADWAL)
+                </a>
+            </div>
+        </div>
+
+        <!-- Panduan Penggunaan -->
+        <div class="card">
+            <h2><i class="fa-solid fa-circle-info"></i> Cara Kerja & Fitur Bot</h2>
+            <div class="step-list">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-text"><b>Daftarkan Nomor:</b> Isikan nama, jurusan, dan nomor WhatsApp aktifmu pada form di atas.</div>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-text"><b>Notifikasi Beruntun:</b> Pengingat otomatis akan masuk ke WA saat Sesi Buka, H-7, H-3, H-1, serta Pagi Hari-H Deadline.</div>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-text"><b>Cek Kalender (Keyword `JADWAL`):</b> Kirim pesan <b>JADWAL</b> ke bot WA kapan saja untuk melihat agenda lengkap Sesi 1 s.d. 8.</div>
+                </div>
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div class="step-text"><b>Berhenti Berlangganan (Keyword `STOP`):</b> Cukup balas pesan bot dengan kata <b>STOP</b> untuk mematikan layanan notifikasi.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Contoh Pesan Notifikasi -->
+        <div class="card">
+            <h2><i class="fa-solid fa-mobile-screen-button"></i> Pratinjau Pesan Pengingat</h2>
+            <div class="wa-box">
+                <div class="wa-bubble">🚨🔥 <b>[NOTIF-UT] LAST CHANCE - DEADLINE HARI INI!</b>
+
+Halo <b>Ahmad Subagja</b> (Sistem Informasi),
+Berikut pengingat batas waktu untuk <b>Sesi 3 (Tugas 1)</b>:
+
+📘 Deadline Sesi : <i>11 Okt 2026 (23.59 WIB)</i>
+
+⚠️ <i>Segera selesaikan dan unggah tugas/diskusi kamu di elearning.ut.ac.id sebelum pukul 23.59 WIB!</i>
+-----------------------------------
+<i>Ketik <b>JADWAL</b> untuk cek kalender lengkap | Ketik <b>STOP</b> untuk berhenti.</i></div>
+            </div>
+        </div>
+
+        <div class="footer">
+            Proyek Capstone STSI4401 — Program Studi Sistem Informasi Universitas Terbuka
+        </div>
+
+    </div>
+
+    <script>
+        // =========================================================================
+        // 1. KONFIGURASI SUPABASE
+        // =========================================================================
+        const SUPABASE_URL = "https://mzxrcslawziuvzqpwbjs.supabase.co"; 
+        const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5"; 
+
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // =========================================================================
+        // 2. FUNGSI SIMPAN DATA KE SUPABASE
+        // =========================================================================
+        async function simpanKeSupabase() {
+            const nama = document.getElementById('nama').value.trim();
+            const jurusan = document.getElementById('jurusan').value.trim();
+            let nomorWa = document.getElementById('nomorWa').value.trim();
+            const btnDaftar = document.getElementById('btnDaftar');
+
+            if (!nama || !jurusan || !nomorWa) {
+                tampilkanAlert("Mohon lengkapi semua kolom pendaftaran!", "error");
+                return;
+            }
+
+            // Normalisasi Format Nomor WA ke 628xxx
+            nomorWa = nomorWa.replace(/[^0-9]/g, '');
+            if (nomorWa.startsWith("0")) {
+                nomorWa = "62" + nomorWa.slice(1);
+            }
+
+            btnDaftar.disabled = true;
+            btnDaftar.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Memproses Pendaftaran...`;
+
+            try {
+                const { data, error } = await supabaseClient
+                    .from('mahasiswa')
+                    .insert([
+                        { 
+                            nama: nama, 
+                            jurusan: jurusan, 
+                            nomor_wa: nomorWa,
+                            status_aktif: true 
+                        }
+                    ]);
+
+                if (error) {
+                    if (error.code === '23505') { 
+                        tampilkanAlert("Nomor WhatsApp ini sudah terdaftar sebelumnya!", "error");
+                    } else {
+                        tampilkanAlert("Gagal mendaftar: " + error.message, "error");
+                    }
+                } else {
+                    tampilkanAlert(`✅ Pendaftaran Berhasil! Terima kasih ${nama}, nomor WA (${nomorWa}) kamu telah aktif menerima notifikasi.`, "success");
+                    document.getElementById('formRegistrasi').reset();
+                }
+            } catch (err) {
+                tampilkanAlert("Terjadi kesalahan koneksi ke server.", "error");
+            } finally {
+                btnDaftar.disabled = false;
+                btnDaftar.innerHTML = `<i class="fa-solid fa-bell"></i> Daftar Notifikasi Otomatis`;
+            }
+        }
+
+        function tampilkanAlert(pesan, tipe) {
+            const alertBox = document.getElementById('alert-box');
+            alertBox.style.display = "block";
+            alertBox.innerText = pesan;
+            alertBox.className = (tipe === "success") ? "alert-success" : "alert-error";
+        }
+    </script>
+</body>
+</html>
