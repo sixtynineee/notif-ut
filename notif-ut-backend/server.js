@@ -2,8 +2,7 @@ const {
     default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason, 
-    fetchLatestBaileysVersion,
-    jidNormalizedUser
+    fetchLatestBaileysVersion 
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
@@ -35,7 +34,7 @@ let sock;
 let isReady = false;
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (BAILEYS ENGINE)
+// 3. INISIALISASI BOT WHATSAPP
 // ==========================================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth');
@@ -79,14 +78,14 @@ async function startBot() {
             }
         } else if (connection === 'open') {
             console.log('⏳ Sinkronisasi sesi WhatsApp...');
-            await sleep(5000);
+            await sleep(3000);
             isReady = true;
             console.log('\n✅ WhatsApp Client (Baileys) Berhasil Terhubung & Siap 100%!\n');
         }
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (FIX EKSTRAKSI JID ASLI)
+    // 4. AUTO-REPLY MESSAGES HANDLER (FIXED FOR LID & DIRECT QUOTED REPLY)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         try {
@@ -95,8 +94,9 @@ async function startBot() {
             for (const msg of m.messages) {
                 if (!msg.message || msg.key.fromMe) continue;
 
+                // rawFrom bisa berupa @s.whatsapp.net maupun @lid
                 const rawFrom = msg.key.remoteJid;
-                if (!rawFrom || rawFrom.endsWith('@g.us')) continue;
+                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan Grup
 
                 // Ekstraksi Teks Pesan
                 const teks = (
@@ -107,55 +107,24 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // FIX EKSTRAKSI NOMOR HP UNTUK AKUN @lid
-                let realJid = "";
-
-                // 1. Cek dari field alternatif internal Baileys
-                if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
-                    realJid = msg.key.remoteJidAlt;
-                } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
-                    realJid = msg.key.participantAlt;
-                } else if (rawFrom.endsWith('@s.whatsapp.net')) {
-                    realJid = rawFrom;
-                }
-
-                let nomor62 = "";
-                let nomor08 = "";
-                let nomorPlus62 = "";
-
-                // Jika berhasil mendapat JID asli dari metadata
-                if (realJid) {
-                    let numOnly = realJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-                    nomor62 = numOnly.startsWith('0') ? '62' + numOnly.slice(1) : numOnly;
-                    nomor08 = numOnly.startsWith('62') ? '0' + numOnly.slice(2) : numOnly;
-                    nomorPlus62 = '+' + nomor62;
+                // Ekstraksi Nomor HP Murni dari Metadata Payload
+                let phoneDigits = "";
+                if (msg.key.participant) {
+                    phoneDigits = msg.key.participant.split('@')[0].split(':')[0];
+                } else if (msg.key.remoteJidAlt) {
+                    phoneDigits = msg.key.remoteJidAlt.split('@')[0].split(':')[0];
                 } else {
-                    // 2. Jika tidak ada di metadata, cari nomor HP terdaftar di Supabase
-                    const { data: allMhs } = await supabase
-                        .from('mahasiswa')
-                        .select('nama, nomor_wa')
-                        .eq('status_aktif', true);
-
-                    if (allMhs && allMhs.length > 0) {
-                        // Ambil mahasiswa aktif pertama sebagai target balasan
-                        let cleanDbNum = String(allMhs[0].nomor_wa).replace(/[^0-9]/g, '');
-                        nomor62 = cleanDbNum.startsWith('0') ? '62' + cleanDbNum.slice(1) : cleanDbNum;
-                        nomor08 = cleanDbNum.startsWith('62') ? '0' + cleanDbNum.slice(2) : cleanDbNum;
-                        nomorPlus62 = '+' + nomor62;
-
-                        const [resWA] = await sock.onWhatsApp(nomor62);
-                        if (resWA && resWA.exists) {
-                            realJid = resWA.jid;
-                        }
-                    }
+                    phoneDigits = rawFrom.split('@')[0].split(':')[0];
                 }
 
-                // Fallback jika tetap tidak ditemukan JID murni
-                const targetJid = realJid || `${nomor62}@s.whatsapp.net`;
+                let nomorMurni = phoneDigits.replace(/[^0-9]/g, '');
+                let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
+                let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
+                let nomorPlus62 = '+' + nomor62;
 
-                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Nomor HP: ${nomor62} | Target Kirim: ${targetJid} | Teks: "${teks}"`);
+                console.log(`📩 [PESAN MASUK] Raw JID: ${rawFrom} | Nomor HP: ${nomor62} | Teks: "${teks}"`);
 
-                // Kueri Nama Mahasiswa dari Supabase
+                // Kueri Nama Mahasiswa dari Database Supabase
                 let namaUser = 'Mahasiswa UT';
                 if (nomor62 && !nomor62.startsWith('2192')) {
                     const { data } = await supabase
@@ -181,11 +150,11 @@ async function startBot() {
 
                     if (error) {
                         console.error('❌ [DATABASE ERROR]:', error.message);
-                        await sock.sendMessage(targetJid, { text: '❌ Gagal memproses penonaktifan. Silakan coba lagi nanti.' });
+                        await sock.sendMessage(rawFrom, { text: '❌ Gagal memproses penonaktifan. Silakan coba lagi nanti.' }, { quoted: msg });
                     } else if (!data || data.length === 0) {
-                        await sock.sendMessage(targetJid, { text: '🛑 Nomor Anda tidak terdaftar di sistem pendaftaran.' });
+                        await sock.sendMessage(rawFrom, { text: '🛑 Nomor Anda tidak terdaftar di sistem pendaftaran.' }, { quoted: msg });
                     } else {
-                        await sock.sendMessage(targetJid, { text: '🛑 *Layanan Notifikasi Diberhentikan.*\n\nAnda tidak akan menerima pengingat jadwal Tuton UT lagi. Jika ingin mendaftar ulang, silakan akses kembali website pendaftaran.' });
+                        await sock.sendMessage(rawFrom, { text: '🛑 *Layanan Notifikasi Diberhentikan.*\n\nAnda tidak akan menerima pengingat jadwal Tuton UT lagi. Jika ingin mendaftar ulang, silakan akses kembali website pendaftaran.' }, { quoted: msg });
                     }
                     continue;
                 }
@@ -199,7 +168,7 @@ async function startBot() {
                         .order('id', { ascending: true });
 
                     if (error || !daftarJadwal || daftarJadwal.length === 0) {
-                        await sock.sendMessage(targetJid, { text: `Halo *${namaUser}*,\n\nSaat ini daftar jadwal Tuton 1 semester belum tersedia di database.` });
+                        await sock.sendMessage(rawFrom, { text: `Halo *${namaUser}*,\n\nSaat ini daftar jadwal Tuton 1 semester belum tersedia di database.` }, { quoted: msg });
                         continue;
                     }
 
@@ -210,8 +179,9 @@ async function startBot() {
                     });
                     balasanJadwal += `-----------------------------------\n_Ketik *STOP* untuk berhenti berlangganan._`;
 
-                    await sock.sendMessage(targetJid, { text: balasanJadwal });
-                    console.log(`✅ [AUTO-REPLY JADWAL] Berhasil terkirim ke ${targetJid}`);
+                    // Kirim balasan langsung ke rawFrom DENGAN { quoted: msg }
+                    await sock.sendMessage(rawFrom, { text: balasanJadwal }, { quoted: msg });
+                    console.log(`✅ [AUTO-REPLY JADWAL] Berhasil terkirim ke ${rawFrom}`);
                     continue;
                 }
 
@@ -220,8 +190,9 @@ async function startBot() {
                     `👉 *JADWAL* : Cek kalender jadwal Tuton 1 semester (Sesi 1-8).\n` +
                     `👉 *STOP* : Berhenti menerima notifikasi pengingat.`;
 
-                await sock.sendMessage(targetJid, { text: pesanBantuan });
-                console.log(`✅ [AUTO-REPLY FALLBACK] Berhasil terkirim ke ${targetJid}`);
+                // Kirim balasan langsung ke rawFrom DENGAN { quoted: msg }
+                await sock.sendMessage(rawFrom, { text: pesanBantuan }, { quoted: msg });
+                console.log(`✅ [AUTO-REPLY FALLBACK] Berhasil terkirim ke ${rawFrom}`);
             }
         } catch (err) {
             console.error('❌ Error Handling Message:', err);
@@ -261,6 +232,7 @@ async function kirimNotifikasiMassal(jadwal) {
         }
 
         try {
+            // Verifikasi pendaftaran nomor via server WA untuk mendapatkan JID yang valid
             const [result] = await sock.onWhatsApp(nomorBersih);
             
             if (!result || !result.exists) {
