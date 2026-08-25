@@ -2,13 +2,32 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
+const http = require('http');
 
-//KONFIGURASI SUPABASE
+// ==========================================
+// 1. SERVER HEALTH-CHECK (MENCEGAH RENDER SLEEP)
+// ==========================================
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot UT WhatsApp is Active and Running!\n');
+}).listen(PORT, () => {
+    console.log(`🌐 Server Health Check aktif di port ${PORT}`);
+});
+
+// ==========================================
+// 2. KONFIGURASI SUPABASE
+// ==========================================
 const SUPABASE_URL = "https://mzxrcslawziuvzqpwbjs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-//INISIALISASI BOT WHATSAPP (Konfigurasi Puppeteer Stabil)
+// Helper Delay untuk cegah spike RAM saat kirim pesan massal
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ==========================================
+// 3. INISIALISASI BOT WHATSAPP (EXTREME LOW-RAM CONFIG)
+// ==========================================
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -21,7 +40,24 @@ const client = new Client({
             '--no-first-run',
             '--no-zygote',
             '--disable-gpu',
-            '--single-process'
+            '--single-process', // Menggabungkan proses Chromium dalam 1 thread
+            '--disable-extensions',
+            '--disable-component-update',
+            '--disable-background-networking',
+            '--disable-sync',
+            '--disable-default-apps',
+            '--mute-audio',
+            '--no-default-browser-check',
+            '--autoplay-policy=user-gesture-required',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-breakpad',
+            '--disable-client-side-phishing-detection',
+            '--disable-ipc-flooding-protection',
+            '--disable-notifications',
+            '--disable-offer-store-unfilled-public-keys',
+            '--disable-popup-blocking',
+            '--js-flags="--max-old-space-size=256"' // Batasi heap Node.js internal
         ]
     }
 });
@@ -35,14 +71,25 @@ client.on('ready', () => {
     console.log('\n✅ WhatsApp Client Berhasil Terhubung & Siap Mengirim Notifikasi!\n');
 });
 
-//FITUR INTERAKTIF: AUTO-REPLY (STOP, JADWAL, & FALLBACK)
+// ==========================================
+// 4. GARBAGE COLLECTION PERIODIK (EMBERAN MEMORI)
+// ==========================================
+cron.schedule('*/15 * * * *', () => {
+    if (global.gc) {
+        global.gc();
+        console.log('🧹 [MEMORY] Pembersihan memori rutin (Garbage Collection) berhasil dijalankan.');
+    }
+});
+
+// ==========================================
+// 5. FITUR INTERAKTIF: AUTO-REPLY
+// ==========================================
 client.on('message', async (msg) => {
     if (msg.from.endsWith('@g.us')) return;
 
     const teks = msg.body.trim().toUpperCase();
 
     // EKSTRAKSI NOMOR HP ASLI DARI PAYLOAD MENTAH WHATSAPP (_data)
-    // Mengabaikan ID internal @lid (2192...) dan mengambil JID HP asli
     let rawJid = "";
     
     if (msg._data && msg._data.from && msg._data.from.endsWith('@c.us')) {
@@ -57,7 +104,7 @@ client.on('message', async (msg) => {
     // Ambil angka murni nomor HP
     let nomorTeleponMurni = rawJid.replace('@c.us', '').replace('@lid', '').split(':')[0].replace(/[^0-9]/g, '');
 
-    // Standardisasi 3 format nomor Indonesia (62..., 08..., +62...)
+    // Standardisasi format nomor Indonesia
     let nomor62 = nomorTeleponMurni.startsWith('0') ? '62' + nomorTeleponMurni.slice(1) : nomorTeleponMurni;
     let nomor08 = nomorTeleponMurni.startsWith('62') ? '0' + nomorTeleponMurni.slice(2) : nomorTeleponMurni;
     let nomorPlus62 = '+' + nomor62;
@@ -85,7 +132,7 @@ client.on('message', async (msg) => {
         return;
     }
 
-    // B. FITUR CEK JADWAL (FORMAT RINGKAS SESI 1-8)
+    // B. FITUR CEK JADWAL
     if (teks === 'JADWAL' || teks === 'INFO' || teks === 'CEK JADWAL') {
         const { data: mhs } = await supabase
             .from('mahasiswa')
@@ -106,7 +153,7 @@ client.on('message', async (msg) => {
             return;
         }
 
-        let balasanJadwal = `📅 *[KALENDER TUTON UT 2026 GENAP]*\n\nHalo *${namaUser}*, berikut jadwal Sesi 1 s.d. 8:\n\n`;
+        let balasanJadwal = `📅 *[KALENDER TUTON UT GENAP]*\n\nHalo *${namaUser}*, berikut jadwal Sesi 1 s.d. 8:\n\n`;
 
         daftarJadwal.forEach((j) => {
             const tglBuka = new Date(j.waktu_kirim).toLocaleDateString('id-ID', {
@@ -127,7 +174,7 @@ client.on('message', async (msg) => {
         return;
     }
 
-    // C. BANTUAN / FALLBACK UNTUK PESAN LAINNYA
+    // C. FALLBACK / BANTUAN
     const pesanBantuan = `🤖 *[BOT NOTIF-UT]*\n\nHalo! Saya adalah bot pengingat otomatis Tuton UT. Kata kunci yang dapat kamu gunakan:\n\n` +
         `👉 *JADWAL* : Cek kalender jadwal Tuton 1 semester (Sesi 1-8).\n` +
         `👉 *STOP* : Berhenti menerima notifikasi pengingat.`;
@@ -135,11 +182,12 @@ client.on('message', async (msg) => {
     await msg.reply(pesanBantuan);
 });
 
-//LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI)
+// ==========================================
+// 6. LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI)
+// ==========================================
 async function kirimNotifikasiMassal(jadwal) {
     console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
 
-    // HANYA AMBIL MAHASISWA YANG status_aktif BERVALUASI TRUE
     const { data: daftarMahasiswa, error } = await supabase
         .from('mahasiswa')
         .select('*')
@@ -197,15 +245,21 @@ _Ketik *JADWAL* untuk cek kalender lengkap | Ketik *STOP* untuk berhenti._`;
         } catch (err) {
             console.error(`❌ Gagal mengirim ke ${nomorBersih}:`, err.message || err);
         }
+
+        // Delay 2 detik antar pengiriman agar RAM & CPU tidak loncat/OOM
+        await sleep(2000);
     }
 
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
 }
-// CRONJOB SCHEDULER
+
+// ==========================================
+// 7. CRONJOB SCHEDULER
+// ==========================================
 cron.schedule('* * * * *', async () => {
     const sekarang = new Date().toISOString();
 
-    const { data: jadwalPending, error } = await supabase
+    const { data: jadwalPending } = await supabase
         .from('jadwal_tuton')
         .select('*')
         .lte('waktu_kirim', sekarang)
@@ -218,4 +272,5 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
+// Start bot
 client.initialize();
