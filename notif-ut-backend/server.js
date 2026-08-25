@@ -11,7 +11,7 @@ const http = require('http');
 const pino = require('pino');
 
 // ==========================================
-// 1. SERVER HEALTH-CHECK (DUMMY HTTP FOR RENDER)
+// 1. SERVER HEALTH-CHECK (DUMMY HTTP FOR RENDER 24/7)
 // ==========================================
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
@@ -31,10 +31,10 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let sock;
-let isReady = false; // Flag untuk memastikan sesi WA sudah benar-benar siap
+let isReady = false;
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (WA BUSINESS COMPATIBLE)
+// 3. INISIALISASI BOT WHATSAPP (BAILEYS ENGINE)
 // ==========================================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth');
@@ -67,9 +67,8 @@ async function startBot() {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.log(`⚠️ Koneksi terputus (Reason Code: ${statusCode})`);
 
-            // Reason 515 = Restart Required (Sangat sering di WA Business saat awal terkoneksi)
             if (statusCode === 515 || statusCode === DisconnectReason.restartRequired) {
-                console.log('🔄 [RESTART REQUIRED] Melakukan koneksi ulang untuk menyingkronkan sesi...');
+                console.log('🔄 [RESTART REQUIRED] Melakukan koneksi ulang untuk menyinkronkan sesi...');
                 setTimeout(() => startBot(), 2000);
             } else if (statusCode !== DisconnectReason.loggedOut) {
                 console.log('🔄 Reconnecting otomatis...');
@@ -78,15 +77,16 @@ async function startBot() {
                 console.log('❌ Anda telah Log Out. Silakan hapus folder baileys_auth dan restart aplikasi.');
             }
         } else if (connection === 'open') {
-            console.log('⏳ Sinkronisasi sesi WhatsApp Business...');
-            // Beri jeda 5 detik setelah terhubung agar Signal Keys WA Business tersimpan sempurna
-            await sleep(5000);
+            console.log('⏳ Sinkronisasi sesi WhatsApp...');
+            await sleep(5000); // Penyeimbang sesi WA Business
             isReady = true;
             console.log('\n✅ WhatsApp Client (Baileys) Berhasil Terhubung & Siap 100%!\n');
         }
     });
 
-    // AUTO-REPLY MESSAGES HANDLER
+    // ==========================================
+    // 4. AUTO-REPLY MESSAGES HANDLER
+    // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         try {
             if (m.type !== 'notify') return;
@@ -95,8 +95,9 @@ async function startBot() {
                 if (!msg.message || msg.key.fromMe) continue;
 
                 const from = msg.key.remoteJid;
-                if (!from || from.endsWith('@g.us')) continue;
+                if (!from || from.endsWith('@g.us')) continue; // Mengabaikan Grup
 
+                // Ekstraksi Teks Pesan
                 const teks = (
                     msg.message.conversation ||
                     msg.message.extendedTextMessage?.text ||
@@ -105,15 +106,33 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                let nomorTeleponMurni = from.replace('@s.whatsapp.net', '').replace('@lid', '').split(':')[0].replace(/[^0-9]/g, '');
-                let nomor62 = nomorTeleponMurni.startsWith('0') ? '62' + nomorTeleponMurni.slice(1) : nomorTeleponMurni;
-                let nomor08 = nomorTeleponMurni.startsWith('62') ? '0' + nomorTeleponMurni.slice(2) : nomorTeleponMurni;
+                // Ekstraksi Nomor HP Asli
+                let rawNumber = from.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+
+                let nomor62 = rawNumber.startsWith('0') ? '62' + rawNumber.slice(1) : rawNumber;
+                let nomor08 = rawNumber.startsWith('62') ? '0' + rawNumber.slice(2) : rawNumber;
                 let nomorPlus62 = '+' + nomor62;
 
-                console.log(`📩 [PESAN MASUK] Dari: ${nomor62} | Pesan: "${teks}"`);
+                console.log(`📩 [PESAN MASUK] Dari JID: ${from} | Teks: "${teks}"`);
+
+                // Kueri Nama Mahasiswa dari Database Supabase
+                let namaUser = 'Mahasiswa UT';
+                if (!nomor62.startsWith('2192')) {
+                    const { data } = await supabase
+                        .from('mahasiswa')
+                        .select('nama')
+                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
+                        .maybeSingle();
+
+                    if (data && data.nama) {
+                        namaUser = data.nama;
+                    }
+                }
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
+                    console.log(`[PROSES STOP] Menerima perintah STOP dari ${nomor62}`);
+
                     const { data, error } = await supabase
                         .from('mahasiswa')
                         .update({ status_aktif: false })
@@ -121,25 +140,18 @@ async function startBot() {
                         .select();
 
                     if (error) {
-                        await sock.sendMessage(from, { text: '❌ Gagal memproses penonaktifan. Silakan coba lagi nanti.' });
+                        console.error('❌ [DATABASE ERROR]:', error.message);
+                        await sock.sendMessage(from, { text: '❌ Gagal memproses penonaktifan. Silakan coba lagi nanti.' }, { quoted: msg });
                     } else if (!data || data.length === 0) {
-                        await sock.sendMessage(from, { text: '🛑 Nomor Anda tidak terdaftar di sistem pendaftaran.' });
+                        await sock.sendMessage(from, { text: '🛑 Nomor Anda tidak terdaftar di sistem pendaftaran.' }, { quoted: msg });
                     } else {
-                        await sock.sendMessage(from, { text: '🛑 *Layanan Notifikasi Diberhentikan.*\n\nAnda tidak akan menerima pengingat jadwal Tuton UT lagi.' });
+                        await sock.sendMessage(from, { text: '🛑 *Layanan Notifikasi Diberhentikan.*\n\nAnda tidak akan menerima pengingat jadwal Tuton UT lagi. Jika ingin mendaftar ulang, silakan akses kembali website pendaftaran.' }, { quoted: msg });
                     }
                     continue;
                 }
 
                 // B. FITUR CEK JADWAL
                 if (teks === 'JADWAL' || teks === 'INFO' || teks === 'CEK JADWAL') {
-                    const { data: mhs } = await supabase
-                        .from('mahasiswa')
-                        .select('nama')
-                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
-                        .single();
-
-                    const namaUser = mhs ? mhs.nama : 'Mahasiswa UT';
-
                     const { data: daftarJadwal, error } = await supabase
                         .from('jadwal_tuton')
                         .select('*')
@@ -147,7 +159,7 @@ async function startBot() {
                         .order('id', { ascending: true });
 
                     if (error || !daftarJadwal || daftarJadwal.length === 0) {
-                        await sock.sendMessage(from, { text: `Halo *${namaUser}*,\n\nSaat ini daftar jadwal Tuton 1 semester belum tersedia di database.` });
+                        await sock.sendMessage(from, { text: `Halo *${namaUser}*,\n\nSaat ini daftar jadwal Tuton 1 semester belum tersedia di database.` }, { quoted: msg });
                         continue;
                     }
 
@@ -158,16 +170,18 @@ async function startBot() {
                     });
                     balasanJadwal += `-----------------------------------\n_Ketik *STOP* untuk berhenti berlangganan._`;
 
-                    await sock.sendMessage(from, { text: balasanJadwal });
+                    await sock.sendMessage(from, { text: balasanJadwal }, { quoted: msg });
+                    console.log(`✅ [AUTO-REPLY JADWAL] Terkirim ke ${from}`);
                     continue;
                 }
 
-                // C. BANTUAN / FALLBACK
-                const pesanBantuan = `🤖 *[BOT NOTIF-UT]*\n\nHalo! Saya adalah bot pengingat otomatis Tuton UT. Kata kunci yang dapat kamu gunakan:\n\n` +
+                // C. BANTUAN / FALLBACK UNTUK PESAN SEMBARANGAN (TERMASUK 'TES', 'HALO', DLL)
+                const pesanBantuan = `🤖 *[BOT NOTIF-UT]*\n\nHalo *${namaUser}*! Saya adalah bot pengingat otomatis Tuton UT. Kata kunci yang dapat kamu gunakan:\n\n` +
                     `👉 *JADWAL* : Cek kalender jadwal Tuton 1 semester (Sesi 1-8).\n` +
                     `👉 *STOP* : Berhenti menerima notifikasi pengingat.`;
 
-                await sock.sendMessage(from, { text: pesanBantuan });
+                await sock.sendMessage(from, { text: pesanBantuan }, { quoted: msg });
+                console.log(`✅ [AUTO-REPLY FALLBACK] Terkirim ke ${from}`);
             }
         } catch (err) {
             console.error('❌ Error Handling Message:', err);
@@ -176,7 +190,7 @@ async function startBot() {
 }
 
 // ==========================================
-// 4. LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI)
+// 5. LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI)
 // ==========================================
 async function kirimNotifikasiMassal(jadwal) {
     if (!sock || !isReady) {
@@ -196,6 +210,8 @@ async function kirimNotifikasiMassal(jadwal) {
         return;
     }
 
+    console.log(`📌 Memproses pengiriman ke ${daftarMahasiswa.length} mahasiswa aktif.`);
+
     for (const mhs of daftarMahasiswa) {
         if (mhs.status_aktif !== true) continue;
 
@@ -205,7 +221,7 @@ async function kirimNotifikasiMassal(jadwal) {
         }
 
         try {
-            // Verifikasi pendaftaran nomor via Server WA
+            // Verifikasi nomor via Server WA
             const [result] = await sock.onWhatsApp(nomorBersih);
             
             if (!result || !result.exists) {
@@ -236,14 +252,14 @@ async function kirimNotifikasiMassal(jadwal) {
             console.error(`❌ Gagal mengirim ke ${nomorBersih}:`, err.message || err);
         }
 
-        await sleep(2000);
+        await sleep(2000); // Delay 2 detik
     }
 
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
 }
 
 // ==========================================
-// 5. CRONJOB SCHEDULER
+// 6. CRONJOB SCHEDULER
 // ==========================================
 cron.schedule('* * * * *', async () => {
     if (!isReady) return;
@@ -263,5 +279,5 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
-// Start Bot
+// Start Engine
 startBot();
