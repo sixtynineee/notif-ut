@@ -24,10 +24,14 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJva
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (Sesi Baru "session-v2" untuk Memaksa QR Code)
+// 2. INISIALISASI BOT WHATSAPP (Dengan Cache Versi WA & Event Tracker)
 // =========================================================================
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "session-v2" }),
+    webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+    },
     puppeteer: {
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
@@ -48,7 +52,11 @@ const client = new Client({
     }
 });
 
-// Event ketika QR Code baru diterbitkan
+// INDIKATOR EVENT MONITORING
+client.on('loading_screen', (percent, message) => {
+    console.log(`⏳ Memuat WhatsApp Web: ${percent}% - ${message}`);
+});
+
 client.on('qr', (qr) => {
     console.log('\n========================================================');
     console.log('📌 QR CODE BARU BERHASIL DITERBITKAN! SCAN DENGAN HP KAMU:');
@@ -56,11 +64,18 @@ client.on('qr', (qr) => {
     qrcode.generate(qr, { small: true });
 });
 
+client.on('authenticated', () => {
+    console.log('🔑 Otentikasi WhatsApp Berhasil!');
+});
+
+client.on('auth_failure', (msg) => {
+    console.error('❌ Otentikasi Gagal:', msg);
+});
+
 client.on('ready', () => {
     console.log('\n✅ WhatsApp Client Berhasil Terhubung & Siap Mengirim Notifikasi!\n');
 });
 
-// Penanganan otomatis jika terputus/logout dari HP
 client.on('disconnected', (reason) => {
     console.log('⚠️ Client terputus dari WhatsApp:', reason);
     if (fs.existsSync('./.wwebjs_auth')) {
@@ -260,5 +275,5 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
-console.log('🚀 Memulai inisialisasi Puppeteer & WhatsApp Client (Session v2)...');
+console.log('🚀 Memulai inisialisasi Puppeteer & WhatsApp Client...');
 client.initialize();
