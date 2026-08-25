@@ -24,11 +24,21 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJva
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (LocalAuth dengan Timeout Longgar)
+// 2. INISIALISASI BOT WHATSAPP (Sesi Clean & Auto-Reset Folder Sesi)
 // =========================================================================
+// Pembersihan otomatis folder cache sesi jika ada sisa handshaking yang tertinggal
+if (fs.existsSync('./.wwebjs_auth')) {
+    try {
+        fs.rmSync('./.wwebjs_auth', { recursive: true, force: true });
+        console.log('🧹 Menghapus folder sesi lama untuk reset otentikasi bersih...');
+    } catch (e) {
+        console.error('Gagal hapus folder sesi:', e.message);
+    }
+}
+
 const client = new Client({
-    authStrategy: new LocalAuth({ clientId: "session-v2" }),
-    qrMaxRetries: 10,
+    authStrategy: new LocalAuth({ clientId: "session-v3" }),
+    qrMaxRetries: 5,
     authTimeoutMs: 120000,
     puppeteer: {
         headless: true,
@@ -109,8 +119,10 @@ client.on('message', async (msg) => {
         rawJid = contact.id._serialized || msg.from;
     }
 
+    // Ambil angka murni nomor HP
     let nomorTeleponMurni = rawJid.replace('@c.us', '').replace('@lid', '').split(':')[0].replace(/[^0-9]/g, '');
 
+    // Standardisasi 3 format nomor Indonesia (62..., 08..., +62...)
     let nomor62 = nomorTeleponMurni.startsWith('0') ? '62' + nomorTeleponMurni.slice(1) : nomorTeleponMurni;
     let nomor08 = nomorTeleponMurni.startsWith('62') ? '0' + nomorTeleponMurni.slice(2) : nomorTeleponMurni;
     let nomorPlus62 = '+' + nomor62;
