@@ -1,19 +1,15 @@
 {
-  "name": "notif_ut",
+  "name": "notif-ut-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Backend WhatsApp Bot Pengingat Tuton UT",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "@supabase/supabase-js": "^2.112.3",
-    "node-cron": "^4.6.0",
+    "@supabase/supabase-js": "^2.49.1",
+    "node-cron": "^3.0.3",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.34.7"
+    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main"
   }
 }
