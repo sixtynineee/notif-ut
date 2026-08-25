@@ -1,9 +1,9 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, RemoteAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
+const { SupabaseStore } = require('wwebjs-supabase');
 const cron = require('node-cron');
 const http = require('http');
-const fs = require('fs');
 
 // =========================================================================
 // 0. DUMMY HTTP SERVER (Mencegah Port Timeout di Render Web Service)
@@ -17,19 +17,29 @@ http.createServer((req, res) => {
 });
 
 // =========================================================================
-// 1. KONFIGURASI SUPABASE
+// 1. KONFIGURASI SUPABASE & REMOTE STORE
 // =========================================================================
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://mzxrcslawziuvzqpwbjs.supabase.co";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Menyimpan Sesi WhatsApp ke Database Supabase secara permanen
+const store = new SupabaseStore({
+    client: supabase,
+    tableName: 'wa_sessions'
+});
+
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (Timeout Longgar & Anti-Refresh Mendadak)
+// 2. INISIALISASI BOT WHATSAPP (RemoteAuth - Anti Scan Berulang)
 // =========================================================================
 const client = new Client({
-    authStrategy: new LocalAuth({ clientId: "session-v2" }),
-    qrMaxRetries: 5,                   // Percobaan ulang pemicuan QR
-    authTimeoutMs: 120000,             // Batas waktu tunggu otentikasi diperpanjang ke 2 menit
+    authStrategy: new RemoteAuth({
+        clientId: 'notif-ut-session-v1',
+        store: store,
+        backupSyncIntervalMs: 60000
+    }),
+    qrMaxRetries: 5,
+    authTimeoutMs: 120000,
     puppeteer: {
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
@@ -61,13 +71,17 @@ client.on('loading_screen', (percent, message) => {
 
 client.on('qr', (qr) => {
     console.log('\n========================================================');
-    console.log('📌 QR CODE BARU BERHASIL DITERBITKAN! SCAN DENGAN HP KAMU:');
+    console.log('📌 SCAN QR CODE DENGAN HP KAMU (CUKUP 1 KALI SELEMANYA):');
     console.log('========================================================\n');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('authenticated', () => {
-    console.log('🔑 Otentikasi WhatsApp Berhasil!');
+    console.log('🔑 Otentikasi Berhasil! Sesi sedang disimpan ke Supabase Database...');
+});
+
+client.on('remote_session_saved', () => {
+    console.log('💾 Sesi WhatsApp BERHASIL dicadangkan secara permanen ke Supabase Database!');
 });
 
 client.on('auth_failure', (msg) => {
@@ -76,18 +90,6 @@ client.on('auth_failure', (msg) => {
 
 client.on('ready', () => {
     console.log('\n✅ WhatsApp Client Berhasil Terhubung & Siap Mengirim Notifikasi!\n');
-});
-
-client.on('disconnected', (reason) => {
-    console.log('⚠️ Client terputus dari WhatsApp:', reason);
-    if (fs.existsSync('./.wwebjs_auth')) {
-        try {
-            fs.rmSync('./.wwebjs_auth', { recursive: true, force: true });
-            console.log('🗑️ Folder sesi lama berhasil dibersihkan.');
-        } catch (e) {
-            console.error('Gagal menghapus folder sesi:', e.message);
-        }
-    }
 });
 
 // =========================================================================
@@ -109,10 +111,8 @@ client.on('message', async (msg) => {
         rawJid = contact.id._serialized || msg.from;
     }
 
-    // Ambil angka murni nomor HP
     let nomorTeleponMurni = rawJid.replace('@c.us', '').replace('@lid', '').split(':')[0].replace(/[^0-9]/g, '');
 
-    // Standardisasi 3 format nomor Indonesia (62..., 08..., +62...)
     let nomor62 = nomorTeleponMurni.startsWith('0') ? '62' + nomorTeleponMurni.slice(1) : nomorTeleponMurni;
     let nomor08 = nomorTeleponMurni.startsWith('62') ? '0' + nomorTeleponMurni.slice(2) : nomorTeleponMurni;
     let nomorPlus62 = '+' + nomor62;
@@ -277,5 +277,5 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
-console.log('🚀 Memulai inisialisasi Puppeteer & WhatsApp Client...');
+console.log('🚀 Memulai inisialisasi Puppeteer & WhatsApp Client (RemoteAuth)...');
 client.initialize();
