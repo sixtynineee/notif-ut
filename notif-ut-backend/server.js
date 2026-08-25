@@ -24,7 +24,7 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "sb_publishable_fdJva
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // =========================================================================
-// 2. INISIALISASI BOT WHATSAPP (Anti-Crash & Bypass Headless Detection)
+// 2. INISIALISASI BOT WHATSAPP (Ultra-Low Memory Config Khusus Render 512MB)
 // =========================================================================
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: "session-v2" }),
@@ -44,7 +44,12 @@ const client = new Client({
             '--disable-default-apps',
             '--mute-audio',
             '--no-default-browser-check',
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            // ARGUMEN HEMAT RAM EKSTREM (MENCEGAH CRASH 512MB):
+            '--js-flags="--max-old-space-size=256"', 
+            '--disable-site-isolation-trials',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--blink-settings=imagesEnabled=false' 
         ]
     }
 });
