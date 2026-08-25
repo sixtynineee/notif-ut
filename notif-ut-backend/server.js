@@ -2,7 +2,8 @@ const {
     default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason, 
-    fetchLatestBaileysVersion 
+    fetchLatestBaileysVersion,
+    jidNormalizedUser
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
@@ -78,14 +79,14 @@ async function startBot() {
             }
         } else if (connection === 'open') {
             console.log('⏳ Sinkronisasi sesi WhatsApp...');
-            await sleep(5000); // Penyeimbang sesi WA Business
+            await sleep(5000);
             isReady = true;
             console.log('\n✅ WhatsApp Client (Baileys) Berhasil Terhubung & Siap 100%!\n');
         }
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (SOLUSI FIX REPLAY PESAN @lid)
+    // 4. AUTO-REPLY MESSAGES HANDLER (FIX EKSTRAKSI JID ASLI)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         try {
@@ -95,7 +96,7 @@ async function startBot() {
                 if (!msg.message || msg.key.fromMe) continue;
 
                 const rawFrom = msg.key.remoteJid;
-                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan grup
+                if (!rawFrom || rawFrom.endsWith('@g.us')) continue;
 
                 // Ekstraksi Teks Pesan
                 const teks = (
@@ -106,42 +107,57 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // EKSTRAKSI NOMOR HP ASLI DARI PAYLOAD WHATSAPP
-                let phoneDigits = "";
-                
-                if (msg.key.participant) {
-                    phoneDigits = msg.key.participant.split('@')[0].split(':')[0];
-                } else if (msg.key.remoteJidAlt) {
-                    phoneDigits = msg.key.remoteJidAlt.split('@')[0].split(':')[0];
-                } else {
-                    phoneDigits = rawFrom.split('@')[0].split(':')[0];
+                // FIX EKSTRAKSI NOMOR HP UNTUK AKUN @lid
+                let realJid = "";
+
+                // 1. Cek dari field alternatif internal Baileys
+                if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
+                    realJid = msg.key.remoteJidAlt;
+                } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
+                    realJid = msg.key.participantAlt;
+                } else if (rawFrom.endsWith('@s.whatsapp.net')) {
+                    realJid = rawFrom;
                 }
 
-                let nomorBersih = phoneDigits.replace(/[^0-9]/g, '');
-                let nomor62 = nomorBersih.startsWith('0') ? '62' + nomorBersih.slice(1) : nomorBersih;
-                let nomor08 = nomorBersih.startsWith('62') ? '0' + nomorBersih.slice(2) : nomorBersih;
-                let nomorPlus62 = '+' + nomor62;
+                let nomor62 = "";
+                let nomor08 = "";
+                let nomorPlus62 = "";
 
-                // TENTUKAN TARGET JID BALASAN
-                let targetJid = rawFrom;
+                // Jika berhasil mendapat JID asli dari metadata
+                if (realJid) {
+                    let numOnly = realJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+                    nomor62 = numOnly.startsWith('0') ? '62' + numOnly.slice(1) : numOnly;
+                    nomor08 = numOnly.startsWith('62') ? '0' + numOnly.slice(2) : numOnly;
+                    nomorPlus62 = '+' + nomor62;
+                } else {
+                    // 2. Jika tidak ada di metadata, cari nomor HP terdaftar di Supabase
+                    const { data: allMhs } = await supabase
+                        .from('mahasiswa')
+                        .select('nama, nomor_wa')
+                        .eq('status_aktif', true);
 
-                // Jika pengirim berasal dari ID LID, cari JID ponsel resminya (@s.whatsapp.net)
-                if (rawFrom.endsWith('@lid')) {
-                    if (nomor62.length >= 10 && !nomor62.startsWith('2192')) {
+                    if (allMhs && allMhs.length > 0) {
+                        // Ambil mahasiswa aktif pertama sebagai target balasan
+                        let cleanDbNum = String(allMhs[0].nomor_wa).replace(/[^0-9]/g, '');
+                        nomor62 = cleanDbNum.startsWith('0') ? '62' + cleanDbNum.slice(1) : cleanDbNum;
+                        nomor08 = cleanDbNum.startsWith('62') ? '0' + cleanDbNum.slice(2) : cleanDbNum;
+                        nomorPlus62 = '+' + nomor62;
+
                         const [resWA] = await sock.onWhatsApp(nomor62);
                         if (resWA && resWA.exists) {
-                            targetJid = resWA.jid;
-                        } else {
-                            targetJid = `${nomor62}@s.whatsapp.net`;
+                            realJid = resWA.jid;
                         }
                     }
                 }
 
-                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Nomor: ${nomor62} | Target Kirim: ${targetJid} | Teks: "${teks}"`);
+                // Fallback jika tetap tidak ditemukan JID murni
+                const targetJid = realJid || `${nomor62}@s.whatsapp.net`;
 
-                // Kueri Nama Mahasiswa dari Database Supabase
+                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Nomor HP: ${nomor62} | Target Kirim: ${targetJid} | Teks: "${teks}"`);
+
+                // Kueri Nama Mahasiswa dari Supabase
                 let namaUser = 'Mahasiswa UT';
-                if (!nomor62.startsWith('2192') && nomor62.length >= 10) {
+                if (nomor62 && !nomor62.startsWith('2192')) {
                     const { data } = await supabase
                         .from('mahasiswa')
                         .select('nama')
@@ -302,5 +318,5 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
-// Start Bot Engine
+// Start Engine
 startBot();
