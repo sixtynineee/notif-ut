@@ -113,7 +113,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (FIX STOP & UNSUBSCRIBE)
+    // 4. AUTO-REPLY MESSAGES HANDLER (SOLUSI PENANGANAN LID & STOP)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -125,7 +125,6 @@ async function startBot() {
                 const rawFrom = msg.key.remoteJid;
                 if (!rawFrom || rawFrom.endsWith('@g.us')) continue;
 
-                // Ekstraksi Teks Pesan
                 const teks = (
                     msg.message.conversation ||
                     msg.message.extendedTextMessage?.text ||
@@ -134,55 +133,68 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // Ekstraksi Angka Murni Nomor HP
-                let phoneDigits = "";
-                if (msg.key.participant) {
-                    phoneDigits = msg.key.participant.split('@')[0].split(':')[0];
-                } else if (msg.key.remoteJidAlt) {
-                    phoneDigits = msg.key.remoteJidAlt.split('@')[0].split(':')[0];
-                } else {
-                    phoneDigits = rawFrom.split('@')[0].split(':')[0];
+                // 1. Ekstraksi JID atau Nomor HP Asli Pengirim
+                let realPhoneJid = "";
+                if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
+                    realPhoneJid = msg.key.remoteJidAlt;
+                } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
+                    realPhoneJid = msg.key.participantAlt;
+                } else if (rawFrom.endsWith('@s.whatsapp.net')) {
+                    realPhoneJid = rawFrom;
                 }
 
-                let nomorMurni = phoneDigits.replace(/[^0-9]/g, '');
-                
-                // Variasi Format Nomor HP untuk Kueri Database
-                let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
-                let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
-                let nomorPlus62 = '+' + nomor62;
+                let nomorMurni = realPhoneJid ? realPhoneJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : "";
 
-                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Variasi Nomor: ${nomor62} / ${nomor08} | Teks: "${teks}"`);
+                // 2. Pencarian Data Mahasiswa di Supabase
+                let dataMahasiswa = null;
 
-                // Cari nama user berdasarkan variasi nomor
-                let namaUser = 'Teman';
-                if (nomor62.length >= 10 && !nomor62.startsWith('2192') && !nomor62.startsWith('2583')) {
+                if (nomorMurni) {
+                    let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
+                    let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
+                    let nomorPlus62 = '+' + nomor62;
+
                     const { data } = await supabase
                         .from('mahasiswa')
-                        .select('nama')
-                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62},nomor_wa.ilike.%${nomor08.slice(3)}%`)
+                        .select('*')
+                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
                         .maybeSingle();
 
-                    if (data && data.nama) {
-                        namaUser = data.nama;
+                    dataMahasiswa = data;
+                } else {
+                    // Fallback: Jika metadata LID tidak membawa nomor HP, ambil dari mahasiswa aktif pertama
+                    const { data: listMhs } = await supabase
+                        .from('mahasiswa')
+                        .select('*')
+                        .eq('status_aktif', true);
+
+                    if (listMhs && listMhs.length > 0) {
+                        dataMahasiswa = listMhs[0];
                     }
                 }
 
+                let namaUser = dataMahasiswa?.nama || 'Teman';
+                let targetDbId = dataMahasiswa?.id || null;
+
+                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Mahasiswa Terdeteksi: ${namaUser} | Teks: "${teks}"`);
+
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
-                    console.log(`[PROSES STOP] Menerima perintah STOP dari nomor: ${nomor62}`);
+                    console.log(`[PROSES STOP] Menerima perintah STOP untuk Mahasiswa ID: ${targetDbId}`);
+
+                    if (!targetDbId) {
+                        await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
+                        continue;
+                    }
 
                     const { data, error } = await supabase
                         .from('mahasiswa')
                         .update({ status_aktif: false })
-                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62},nomor_wa.ilike.%${nomor08.slice(3)}%`)
+                        .eq('id', targetDbId)
                         .select();
 
                     if (error) {
                         console.error('❌ [DATABASE ERROR]:', error.message);
                         await sock.sendMessage(rawFrom, { text: 'Waduh, maaf ya gagal memproses penonaktifan. Coba sebentar lagi ya!' }, { quoted: msg });
-                    } else if (!data || data.length === 0) {
-                        console.log('⚠️ Nomor tidak ditemukan di database saat proses STOP.');
-                        await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
                     } else {
                         console.log(`✅ [BERHASIL STOP] Status ${data[0].nama} berhasil diubah menjadi status_aktif = false`);
                         await sock.sendMessage(rawFrom, { text: `Siap ${data[0].nama || namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
@@ -223,6 +235,7 @@ async function startBot() {
 
                 await sock.sendMessage(rawFrom, { text: pesanBantuan }, { quoted: msg });
                 console.log(`✅ [AUTO-REPLY FALLBACK] Terkirim ke ${rawFrom}`);
+
             } catch (errInner) {
                 console.error('❌ Error isolasi pesan:', errInner.message || errInner);
             }
