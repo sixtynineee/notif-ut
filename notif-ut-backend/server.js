@@ -8,7 +8,6 @@ const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const http = require('http');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal');
 
 // ==========================================
 // 1. SERVER HEALTH-CHECK (MENCEGAH RENDER SLEEP 24/7)
@@ -33,6 +32,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
+// NOMOR HP BOT WHATSAPP
+const BOT_PHONE_NUMBER = "6283148834649"; 
+
+// Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt') || err.message.includes('prekey'))) {
         return;
@@ -41,17 +44,18 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP
+// 3. INISIALISASI BOT WHATSAPP (KHUSUS PAIRING CODE)
 // ==========================================
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v8');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
         version,
         auth: state,
+        printQRInTerminal: false, // Mematikan QR total
         logger: pino({ level: 'silent' }),
-        browser: ['Mac OS', 'Chrome', '121.0.6167.160'],
+        browser: ['Chrome (Linux)', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -61,17 +65,31 @@ async function startBot() {
         }
     });
 
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                let cleanNumber = BOT_PHONE_NUMBER.replace(/[^0-9]/g, '');
+                if (cleanNumber.startsWith('0')) {
+                    cleanNumber = '62' + cleanNumber.slice(1);
+                }
+
+                let code = await sock.requestPairingCode(cleanNumber);
+                code = code?.match(/.{1,4}/g)?.join('-') || code;
+                
+                console.log('\n==================================================');
+                console.log(`🔑 KODE PAIRING WHATSAPP KAMU:  ${code}`);
+                console.log('==================================================');
+                console.log(`📲 MASUKKAN KODE DI ATAS KE HP: ${cleanNumber}\n`);
+            } catch (err) {
+                console.error('❌ Gagal meminta Pairing Code:', err.message || err);
+            }
+        }, 5000);
+    }
+
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            console.log('\n==================================================');
-            console.log('📷 SCAN QR CODE DI BAWAH INI DENGAN HP KAMU:');
-            console.log('==================================================\n');
-            qrcode.generate(qr, { small: true });
-        }
+        const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
             isReady = false;
@@ -128,6 +146,7 @@ async function startBot() {
                 let nomorMurni = realPhoneJid ? realPhoneJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : "";
 
                 let dataMahasiswa = null;
+
                 if (nomorMurni) {
                     let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
                     let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
@@ -142,6 +161,7 @@ async function startBot() {
                     dataMahasiswa = data;
                 }
 
+                // FIX NAMA: Hanya pakai nama Supabase jika match, atau PushName WA / "Teman" (Gak bakal asal tunjuk nama lain lagi)
                 let namaUser = dataMahasiswa?.nama || msg.pushName || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
@@ -281,7 +301,7 @@ cron.schedule('* * * * *', async () => {
         .eq('status_terkirim', false);
 
     if (jadwalPending && jadwalPending.length > 0) {
-        for (const jadwal of jadwalPending) {
+        for (const jadwal fearful of jadwalPending) {
             await kirimNotifikasiMassal(jadwal);
         }
     }
