@@ -44,11 +44,11 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (MENGGUNAKAN SESI V13 SAMA)
+// 3. INISIALISASI BOT WHATSAPP (SESI V14 BERSIH)
 // ==========================================
 async function startBot() {
-    // Tetap gunakan baileys_session_v13 agar sesi pautan yang berhasil tidak hilang
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v13');
+    // Sesi v14 untuk mereset dari Reason Code 401
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v14');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -104,7 +104,7 @@ async function startBot() {
                 console.log('🔄 Reconnecting otomatis...');
                 setTimeout(() => startBot(), 3000);
             } else {
-                console.log('❌ Sesi Terputus/Log Out.');
+                console.log('❌ Sesi Terputus/Log Out (Reason Code 401/Logged Out).');
             }
         } else if (connection === 'open') {
             console.log('⏳ Menyinkronkan sesi WhatsApp...');
@@ -115,7 +115,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (FIX IDENTITAS LID & NOMOR HP)
+    // 4. AUTO-REPLY MESSAGES HANDLER (ANALISIS PRESISI DATA MAHASISWA)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -135,7 +135,10 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Kumpulkan seluruh kandidat JID/Nomor HP dari metadata
+                // 1. Ambil nama bawaan profil WhatsApp pengirim jika ada
+                const pushName = msg.pushName && msg.pushName.trim() ? msg.pushName.trim() : 'Kak';
+
+                // 2. Kumpulkan kandidat JID yang berpotensi menyimpan nomor HP
                 let candidates = [];
                 if (msg.key.remoteJidAlt) candidates.push(msg.key.remoteJidAlt);
                 if (msg.key.participantAlt) candidates.push(msg.key.participantAlt);
@@ -144,31 +147,32 @@ async function startBot() {
 
                 let dataMahasiswa = null;
 
-                // 2. Loop pencarian ke Supabase berdasarkan digit nomor HP murni
+                // 3. Cari di Supabase HANYA jika kandidat merupakan nomor HP valid (10-14 digit)
                 for (let candidate of candidates) {
                     let cleanedDigits = candidate.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-                    if (!cleanedDigits) continue;
+
+                    // Abaikan jika string angka terlalu panjang (berarti ID @lid) atau terlalu pendek
+                    if (!cleanedDigits || cleanedDigits.length < 10 || cleanedDigits.length > 14) continue;
 
                     let nomor62 = cleanedDigits.startsWith('0') ? '62' + cleanedDigits.slice(1) : cleanedDigits;
                     let nomor08 = cleanedDigits.startsWith('62') ? '0' + cleanedDigits.slice(2) : cleanedDigits;
                     let nomorPlus62 = '+' + nomor62;
 
-                    let suffix = nomor08.length > 8 ? nomor08.slice(-8) : nomor08;
+                    let suffix = nomor08.length >= 8 ? nomor08.slice(-8) : nomor08;
 
-                    const { data } = await supabase
+                    const { data, error } = await supabase
                         .from('mahasiswa')
                         .select('*')
                         .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62},nomor_wa.ilike.%${suffix}`)
                         .maybeSingle();
 
-                    if (data) {
+                    if (!error && data) {
                         dataMahasiswa = data;
                         break;
                     }
                 }
 
-                // Sapaan: Prioritas 1 Supabase -> Prioritas 2 PushName WA -> Fallback "Kak"
-                let namaUser = dataMahasiswa?.nama || msg.pushName || 'Kak';
+                let namaUser = dataMahasiswa?.nama || pushName;
                 let isRegistered = !!dataMahasiswa;
                 let targetDbId = dataMahasiswa?.id || null;
 
