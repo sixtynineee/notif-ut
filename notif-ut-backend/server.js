@@ -32,7 +32,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
-// NOMOR HP BOT WHATSAPP
+// NOMOR HP BOT WHATSAPP (Format Wajib 62 tanpa angka 0 di depan)
 const BOT_PHONE_NUMBER = "6283148834649"; 
 
 // Mencegah crash akibat Uncaught Error enkripsi Signal
@@ -44,11 +44,10 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (IDENTITAS WINDOWS CHROME)
+// 3. INISIALISASI BOT WHATSAPP (SESI V13)
 // ==========================================
 async function startBot() {
-    // Sesi v10 agar benar-benar bersih dari percobaan pautan gagal sebelumnya
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v10');
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v13');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -56,7 +55,6 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        // MENGGANTI UBUNTU MENJADI WINDOWS
         browser: ['Windows', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -81,7 +79,7 @@ async function startBot() {
                 console.log('\n==================================================');
                 console.log(`🔑 KODE PAIRING WHATSAPP KAMU:  ${code}`);
                 console.log('==================================================');
-                console.log(`📲 MASUKKAN KODE DI ATAS KE HP: ${cleanNumber}\n`);
+                console.log(`📲 SEGERA MASUKKAN KODE DI ATAS KE HP: ${cleanNumber}\n`);
             } catch (err) {
                 console.error('❌ Gagal meminta Pairing Code:', err.message || err);
             }
