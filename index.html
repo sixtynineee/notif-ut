@@ -85,7 +85,7 @@
         input {
             width: 100%;
             padding: 13px 15px;
-            border: 1.5 solid #dce2e6;
+            border: 1.5px solid #dce2e6;
             border-radius: 8px;
             box-sizing: border-box;
             font-size: 15px;
@@ -297,7 +297,7 @@ Berikut pengingat batas waktu untuk <b>Sesi 3 (Tugas 1)</b>:
         const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         // =========================================================================
-        // 2. FUNGSI SIMPAN DATA KE SUPABASE
+        // 2. FUNGSI SIMPAN & RE-AKTIVASI PENDAFTARAN DI SUPABASE
         // =========================================================================
         async function simpanKeSupabase() {
             const nama = document.getElementById('nama').value.trim();
@@ -316,30 +316,65 @@ Berikut pengingat batas waktu untuk <b>Sesi 3 (Tugas 1)</b>:
                 nomorWa = "62" + nomorWa.slice(1);
             }
 
+            let nomor08 = "0" + nomorWa.slice(2);
+            let nomorPlus62 = "+" + nomorWa;
+
             btnDaftar.disabled = true;
             btnDaftar.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Memproses Pendaftaran...`;
 
             try {
-                const { data, error } = await supabaseClient
+                // A. CEK APAKAH NOMOR SUDAH PERNAH TERDAFTAR DI DATABASE
+                const { data: mhsLama, error: checkErr } = await supabaseClient
                     .from('mahasiswa')
-                    .insert([
-                        { 
-                            nama: nama, 
-                            jurusan: jurusan, 
-                            nomor_wa: nomorWa,
-                            status_aktif: true 
-                        }
-                    ]);
+                    .select('*')
+                    .or(`nomor_wa.eq.${nomorWa},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
+                    .maybeSingle();
 
-                if (error) {
-                    if (error.code === '23505') { 
-                        tampilkanAlert("Nomor WhatsApp ini sudah terdaftar sebelumnya!", "error");
+                if (checkErr) {
+                    throw checkErr;
+                }
+
+                if (mhsLama) {
+                    // B. JIKA SUDAH ADA & STATUS MASIH AKTIF
+                    if (mhsLama.status_aktif === true) {
+                        tampilkanAlert(`ℹ️ Halo ${mhsLama.nama}, nomor WA (${nomorWa}) kamu sudah terdaftar dan layanan pengingat sedang AKTIF!`, "success");
                     } else {
-                        tampilkanAlert("Gagal mendaftar: " + error.message, "error");
+                        // C. JIKA SUDAH ADA TAPI NON-AKTIF (PERNAH KETIK STOP) -> AKTIFKAN KEMBALI
+                        const { error: updateErr } = await supabaseClient
+                            .from('mahasiswa')
+                            .update({ 
+                                nama: nama, 
+                                jurusan: jurusan, 
+                                status_aktif: true 
+                            })
+                            .eq('id', mhsLama.id);
+
+                        if (updateErr) {
+                            tampilkanAlert("Gagal mengaktifkan kembali: " + updateErr.message, "error");
+                        } else {
+                            tampilkanAlert(`✅ Pendaftaran Ulang Berhasil! Selamat datang kembali ${nama}, pengingat WA kamu telah diaktifkan kembali.`, "success");
+                            document.getElementById('formRegistrasi').reset();
+                        }
                     }
                 } else {
-                    tampilkanAlert(`✅ Pendaftaran Berhasil! Terima kasih ${nama}, nomor WA (${nomorWa}) kamu telah aktif menerima notifikasi.`, "success");
-                    document.getElementById('formRegistrasi').reset();
+                    // D. JIKA BELUM PERNAH TERDAFTAR -> INSERT BARU
+                    const { error: insertErr } = await supabaseClient
+                        .from('mahasiswa')
+                        .insert([
+                            { 
+                                nama: nama, 
+                                jurusan: jurusan, 
+                                nomor_wa: nomorWa,
+                                status_aktif: true 
+                            }
+                        ]);
+
+                    if (insertErr) {
+                        tampilkanAlert("Gagal mendaftar: " + insertErr.message, "error");
+                    } else {
+                        tampilkanAlert(`✅ Pendaftaran Berhasil! Terima kasih ${nama}, nomor WA (${nomorWa}) kamu telah aktif menerima notifikasi.`, "success");
+                        document.getElementById('formRegistrasi').reset();
+                    }
                 }
             } catch (err) {
                 tampilkanAlert("Terjadi kesalahan koneksi ke server.", "error");
