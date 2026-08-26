@@ -43,14 +43,33 @@ process.on('uncaughtException', (err) => {
     console.error(' Uncaught Exception:', err);
 });
 
-// Helper untuk normalisasi nomor ke format 62xxx
-function formatTo62(numberStr) {
+// ==========================================
+// HELPER: EKSTRAKSI & NORMALISASI NOMOR WA
+// ==========================================
+function cleanTo62(numberStr) {
     if (!numberStr) return '';
     let clean = String(numberStr).replace(/[^0-9]/g, '');
     if (clean.startsWith('0')) {
         clean = '62' + clean.slice(1);
     }
     return clean;
+}
+
+// Mengekstrak nomor HP dari metadata pesan Baileys (Menangani LID & JID biasa)
+function extractPhoneNumber(msg) {
+    let rawJid = msg.key.remoteJid || '';
+    
+    // Cek alternatif JID jika pesan dari LID (Multi-Device WA)
+    if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
+        rawJid = msg.key.remoteJidAlt;
+    } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
+        rawJid = msg.key.participantAlt;
+    }
+
+    if (!rawJid.endsWith('@s.whatsapp.net')) return null;
+
+    let nomorOnly = rawJid.split('@')[0].split(':')[0];
+    return cleanTo62(nomorOnly);
 }
 
 // ==========================================
@@ -78,7 +97,7 @@ async function startBot() {
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
-                let cleanNumber = formatTo62(BOT_PHONE_NUMBER);
+                let cleanNumber = cleanTo62(BOT_PHONE_NUMBER);
                 let code = await sock.requestPairingCode(cleanNumber);
                 code = code?.match(/.{1,4}/g)?.join('-') || code;
                 
@@ -139,24 +158,14 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Ekstraksi Nomor HP Pengirim yang Akurat
-                let senderJid = rawFrom;
-                if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
-                    senderJid = msg.key.remoteJidAlt;
-                } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
-                    senderJid = msg.key.participantAlt;
-                }
-
-                // Ambil deretan angka nomor saja
-                let nomorMurni = senderJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-
-                // 2. Pencarian Presisi di Supabase (Tanpa Fallback Acak)
+                // 1. Dapatkan nomor murni pengirim
+                const nomor62 = extractPhoneNumber(msg);
                 let dataMahasiswa = null;
 
-                if (nomorMurni) {
-                    let nomor62 = formatTo62(nomorMurni);
-                    let nomor08 = '0' + nomor62.slice(2);
-                    let nomorPlus62 = '+' + nomor62;
+                // 2. Cari di Supabase berdasarkan variasi format nomor yang mungkin diinput dari website
+                if (nomor62) {
+                    const nomor08 = '0' + nomor62.slice(2);
+                    const nomorPlus62 = '+' + nomor62;
 
                     const { data } = await supabase
                         .from('mahasiswa')
@@ -170,14 +179,12 @@ async function startBot() {
                 let namaUser = dataMahasiswa?.nama || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(` [PESAN MASUK] JID: ${rawFrom} | No: ${nomorMurni} | Mahasiswa: ${namaUser} | Teks: "${teks}"`);
+                console.log(` [PESAN MASUK] Raw: ${rawFrom} | No Parsed: ${nomor62 || 'LID/Unknown'} | Mhs: ${namaUser} | Teks: "${teks}"`);
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
-                    console.log(`[PROSES STOP] Perintah STOP dari Nomor: ${nomorMurni} (ID DB: ${targetDbId})`);
-
                     if (!targetDbId) {
-                        await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat kami.' }, { quoted: msg });
+                        await sock.sendMessage(rawFrom, { text: 'Nomor WhatsApp kamu belum terdaftar di sistem pengingat kami. Kamu bisa daftar terlebih dahulu melalui website.' }, { quoted: msg });
                         continue;
                     }
 
@@ -188,12 +195,14 @@ async function startBot() {
                         .select();
 
                     if (error) {
-                        console.error(' [DATABASE ERROR]:', error.message);
-                        await sock.sendMessage(rawFrom, { text: 'Maaf, terjadi kesalahan saat memproses penonaktifan. Coba beberapa saat lagi.' }, { quoted: msg });
+                        console.error(' [DATABASE ERROR STOP]:', error.message);
+                        await sock.sendMessage(rawFrom, { text: 'Maaf, gagal memproses penonaktifan pengingat. Silakan coba beberapa saat lagi.' }, { quoted: msg });
                     } else {
-                        const namaSelesai = data && data[0] ? data[0].nama : namaUser;
-                        console.log(` [BERHASIL STOP] Status ${namaSelesai} diubah menjadi status_aktif = false`);
-                        await sock.sendMessage(rawFrom, { text: `Siap ${namaSelesai}, pengingat Tuton kamu sudah dinonaktifkan ya. Kalau nanti mau diaktifkan lagi, kamu bisa daftar ulang via website. Semangat kuliahnya!` }, { quoted: msg });
+                        const mhsUpdated = data && data[0] ? data[0] : dataMahasiswa;
+                        console.log(` [BERHASIL STOP] Status ${mhsUpdated.nama} diubah menjadi status_aktif = false`);
+                        await sock.sendMessage(rawFrom, { 
+                            text: `Siap ${mhsUpdated.nama}, pengingat Tuton kamu telah dinonaktifkan. Jika ingin mengaktifkan kembali, kamu bisa mendaftar lagi di website kapan saja. Semangat kuliahnya!` 
+                        }, { quoted: msg });
                     }
                     continue;
                 }
@@ -216,14 +225,14 @@ async function startBot() {
                         const tglBuka = new Date(j.waktu_kirim).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
                         balasanJadwal += ` *${j.nama_sesi}*\n• Buka: ${tglBuka}\n• Batas Akhir: ${j.deadline_non_praktik}\n\n`;
                     });
-                    balasanJadwal += `_Ketik *STOP* jika ingin berhenti menerima pengingat harian._`;
+                    balasanJadwal += `_Ketik *STOP* untuk berhenti menerima pengingat otomatis._`;
 
                     await sock.sendMessage(rawFrom, { text: balasanJadwal }, { quoted: msg });
                     continue;
                 }
 
                 // C. BANTUAN / FALLBACK UNTUK PESAN LAINNYA
-                const pesanBantuan = `Halo ${namaUser}!\n\nIni adalah bot pengingat otomatis Tuton UT. Berikut perintah yang bisa kamu gunakan:\n\n` +
+                const pesanBantuan = `Halo ${namaUser}!\n\nIni adalah bot pengingat otomatis Tuton UT. Berikut kata kunci perintah yang bisa kamu gunakan:\n\n` +
                     `• Ketik *JADWAL* : Untuk melihat kalender & deadline Tuton.\n` +
                     `• Ketik *STOP* : Untuk berhenti menerima pengingat harian.`;
 
@@ -242,12 +251,12 @@ async function startBot() {
 async function kirimNotifikasiMassal(jadwal) {
     if (!sock || !isReady) return;
 
-    // Tandai dulu agar tidak terkirim ganda oleh cron berikutnya
+    // Tandai status jadwal agar tidak terkirim ganda
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
 
     console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
 
-    // HANYA ambil mahasiswa yang status_aktif = true
+    // Ambil HANYA mahasiswa dengan status_aktif = true
     const { data: daftarMahasiswa } = await supabase
         .from('mahasiswa')
         .select('*')
@@ -256,7 +265,7 @@ async function kirimNotifikasiMassal(jadwal) {
     if (!daftarMahasiswa || daftarMahasiswa.length === 0) return;
 
     for (const mhs of daftarMahasiswa) {
-        let nomorBersih = formatTo62(mhs.nomor_wa);
+        let nomorBersih = cleanTo62(mhs.nomor_wa);
         if (!nomorBersih) continue;
 
         const targetJid = `${nomorBersih}@s.whatsapp.net`;
@@ -292,7 +301,7 @@ async function kirimNotifikasiMassal(jadwal) {
             console.error(` Gagal mengirim ke ${mhs.nama} (${nomorBersih}):`, err.message || err);
         }
 
-        await sleep(2000); // Delay 2 detik antar pengiriman pesan untuk menghindari ban WA
+        await sleep(2000); // Delay 2 detik antar pesan untuk keamanan nomor
     }
 }
 
