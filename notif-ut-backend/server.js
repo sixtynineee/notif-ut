@@ -2,7 +2,8 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    makeInMemoryStore
 } = require('@whiskeysockets/baileys');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
@@ -21,21 +22,22 @@ http.createServer((req, res) => {
 });
 
 // ==========================================
-// 2. KONFIGURASI SUPABASE
+// 2. KONFIGURASI SUPABASE & STORE
 // ==========================================
 const SUPABASE_URL = "https://mzxrcslawziuvzqpwbjs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// In-Memory Store Baileys untuk memetakan Kontak & LID ke Nomor HP
+const logger = pino({ level: 'silent' });
+const store = makeInMemoryStore({ logger });
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let sock;
 let isReady = false;
-
-// NOMOR HP BOT WHATSAPP
 const BOT_PHONE_NUMBER = "6283148834649";
 
-// Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt') || err.message.includes('prekey'))) {
         return;
@@ -43,9 +45,7 @@ process.on('uncaughtException', (err) => {
     console.error(' Uncaught Exception:', err);
 });
 
-// ==========================================
-// HELPER: EKSTRAKSI & NORMALISASI NOMOR WA
-// ==========================================
+// Helper normalisasi nomor ke format 62xxx
 function cleanTo62(numberStr) {
     if (!numberStr) return '';
     let clean = String(numberStr).replace(/[^0-9]/g, '');
@@ -55,21 +55,33 @@ function cleanTo62(numberStr) {
     return clean;
 }
 
-// Mengekstrak nomor HP dari metadata pesan Baileys (Menangani LID & JID biasa)
-function extractPhoneNumber(msg) {
+// Ekstraksi Nomor HP Pengirim yang mendukung LID & Multi-Device
+async function resolvePhoneNumber(msg, sockInstance) {
     let rawJid = msg.key.remoteJid || '';
     
-    // Cek alternatif JID jika pesan dari LID (Multi-Device WA)
+    // 1. Cek Metadata Alternatif Baileys
     if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
         rawJid = msg.key.remoteJidAlt;
     } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
         rawJid = msg.key.participantAlt;
     }
 
-    if (!rawJid.endsWith('@s.whatsapp.net')) return null;
+    // 2. Jika JID sudah berbentuk @s.whatsapp.net
+    if (rawJid.endsWith('@s.whatsapp.net')) {
+        return cleanTo62(rawJid.split('@')[0].split(':')[0]);
+    }
 
-    let nomorOnly = rawJid.split('@')[0].split(':')[0];
-    return cleanTo62(nomorOnly);
+    // 3. Jika JID berbentuk LID (@lid), cari di Contacts Store
+    if (rawJid.endsWith('@lid') && store.contacts) {
+        const contact = store.contacts[rawJid];
+        if (contact && contact.id && contact.id.endsWith('@s.whatsapp.net')) {
+            return cleanTo62(contact.id.split('@')[0]);
+        }
+    }
+
+    // 4. Fallback jika masih LID
+    let possibleDigits = rawJid.split('@')[0].replace(/[^0-9]/g, '');
+    return possibleDigits.length >= 10 ? possibleDigits : null;
 }
 
 // ==========================================
@@ -83,7 +95,7 @@ async function startBot() {
         version,
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: 'silent' }),
+        logger,
         browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -93,6 +105,9 @@ async function startBot() {
             return { conversation: '' };
         }
     });
+
+    // Hubungkan store dengan event Baileys
+    store?.bind(sock.ev);
 
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
@@ -159,18 +174,17 @@ async function startBot() {
                 if (!teks) continue;
 
                 // 1. Dapatkan nomor murni pengirim
-                const nomor62 = extractPhoneNumber(msg);
+                const nomor62 = await resolvePhoneNumber(msg, sock);
                 let dataMahasiswa = null;
 
-                // 2. Cari di Supabase berdasarkan variasi format nomor yang mungkin diinput dari website
+                // 2. Pencarian Fleksibel di Supabase
                 if (nomor62) {
-                    const nomor08 = '0' + nomor62.slice(2);
-                    const nomorPlus62 = '+' + nomor62;
+                    const nomorSuffix = nomor62.length > 9 ? nomor62.slice(-9) : nomor62;
 
                     const { data } = await supabase
                         .from('mahasiswa')
                         .select('*')
-                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
+                        .ilike('nomor_wa', `%${nomorSuffix}`)
                         .maybeSingle();
 
                     dataMahasiswa = data;
@@ -179,12 +193,14 @@ async function startBot() {
                 let namaUser = dataMahasiswa?.nama || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(` [PESAN MASUK] Raw: ${rawFrom} | No Parsed: ${nomor62 || 'LID/Unknown'} | Mhs: ${namaUser} | Teks: "${teks}"`);
+                console.log(` [PESAN MASUK] Raw JID: ${rawFrom} | No Parsed: ${nomor62 || 'LID/Unknown'} | Mhs: ${namaUser} | Teks: "${teks}"`);
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
                     if (!targetDbId) {
-                        await sock.sendMessage(rawFrom, { text: 'Nomor WhatsApp kamu belum terdaftar di sistem pengingat kami. Kamu bisa daftar terlebih dahulu melalui website.' }, { quoted: msg });
+                        await sock.sendMessage(rawFrom, { 
+                            text: 'Nomor WhatsApp kamu belum terdaftar di sistem pengingat kami. Kamu bisa mendaftar terlebih dahulu melalui website:\nhttps://notif-ut.vercel.app/' 
+                        }, { quoted: msg });
                         continue;
                     }
 
@@ -196,12 +212,12 @@ async function startBot() {
 
                     if (error) {
                         console.error(' [DATABASE ERROR STOP]:', error.message);
-                        await sock.sendMessage(rawFrom, { text: 'Maaf, gagal memproses penonaktifan pengingat. Silakan coba beberapa saat lagi.' }, { quoted: msg });
+                        await sock.sendMessage(rawFrom, { text: 'Maaf, gagal memproses penonaktifan. Silakan coba lagi beberapa saat lagi.' }, { quoted: msg });
                     } else {
                         const mhsUpdated = data && data[0] ? data[0] : dataMahasiswa;
                         console.log(` [BERHASIL STOP] Status ${mhsUpdated.nama} diubah menjadi status_aktif = false`);
                         await sock.sendMessage(rawFrom, { 
-                            text: `Siap ${mhsUpdated.nama}, pengingat Tuton kamu telah dinonaktifkan. Jika ingin mengaktifkan kembali, kamu bisa mendaftar lagi di website kapan saja. Semangat kuliahnya!` 
+                            text: `Siap ${mhsUpdated.nama}, pengingat Tuton kamu telah dinonaktifkan.\n\nJika nanti mau diaktifkan lagi, kamu bisa daftar ulang kapan saja melalui website kami di:\nhttps://notif-ut.vercel.app/\n\nSemangat kuliahnya!` 
                         }, { quoted: msg });
                     }
                     continue;
@@ -225,7 +241,7 @@ async function startBot() {
                         const tglBuka = new Date(j.waktu_kirim).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
                         balasanJadwal += ` *${j.nama_sesi}*\n• Buka: ${tglBuka}\n• Batas Akhir: ${j.deadline_non_praktik}\n\n`;
                     });
-                    balasanJadwal += `_Ketik *STOP* untuk berhenti menerima pengingat otomatis._`;
+                    balasanJadwal += `_Ketik *STOP* untuk berhenti menerima pengingat otomatis._\nWebsite: https://notif-ut.vercel.app/`;
 
                     await sock.sendMessage(rawFrom, { text: balasanJadwal }, { quoted: msg });
                     continue;
@@ -234,7 +250,8 @@ async function startBot() {
                 // C. BANTUAN / FALLBACK UNTUK PESAN LAINNYA
                 const pesanBantuan = `Halo ${namaUser}!\n\nIni adalah bot pengingat otomatis Tuton UT. Berikut kata kunci perintah yang bisa kamu gunakan:\n\n` +
                     `• Ketik *JADWAL* : Untuk melihat kalender & deadline Tuton.\n` +
-                    `• Ketik *STOP* : Untuk berhenti menerima pengingat harian.`;
+                    `• Ketik *STOP* : Untuk berhenti menerima pengingat harian.\n\n` +
+                    `Kunjungi portal resmi kami di:\nhttps://notif-ut.vercel.app/`;
 
                 await sock.sendMessage(rawFrom, { text: pesanBantuan }, { quoted: msg });
 
@@ -251,12 +268,9 @@ async function startBot() {
 async function kirimNotifikasiMassal(jadwal) {
     if (!sock || !isReady) return;
 
-    // Tandai status jadwal agar tidak terkirim ganda
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
-
     console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
 
-    // Ambil HANYA mahasiswa dengan status_aktif = true
     const { data: daftarMahasiswa } = await supabase
         .from('mahasiswa')
         .select('*')
@@ -285,7 +299,7 @@ async function kirimNotifikasiMassal(jadwal) {
             pesan = `Halo ${mhs.nama},\n\nPengingat untuk *${jadwal.nama_sesi}* dengan batas waktu _${jadwal.deadline_non_praktik}_.\n\nCek elearning.ut.ac.id ya!`;
         }
 
-        pesan += `\n\n-----------------------------------\n_Ketik *JADWAL* untuk info jadwal | Ketik *STOP* untuk berhenti berlangganan._`;
+        pesan += `\n\n-----------------------------------\n_Ketik *JADWAL* untuk info jadwal | Ketik *STOP* untuk berhenti berlangganan._\nPortal Resmi: https://notif-ut.vercel.app/`;
 
         try {
             await sock.sendMessage(targetJid, { text: pesan });
@@ -301,12 +315,12 @@ async function kirimNotifikasiMassal(jadwal) {
             console.error(` Gagal mengirim ke ${mhs.nama} (${nomorBersih}):`, err.message || err);
         }
 
-        await sleep(2000); // Delay 2 detik antar pesan untuk keamanan nomor
+        await sleep(2000);
     }
 }
 
 // ==========================================
-// 6. CRONJOB SCHEDULER (BERJALAN SETIAP MENIT)
+// 6. CRONJOB SCHEDULER
 // ==========================================
 cron.schedule('* * * * *', async () => {
     if (!isReady) return;
