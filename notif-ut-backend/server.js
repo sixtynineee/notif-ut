@@ -2,7 +2,8 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    jidNormalizedUser
 } = require('@whiskeysockets/baileys');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
@@ -41,7 +42,7 @@ process.on('uncaughtException', (err) => {
     console.error(' Uncaught Exception:', err);
 });
 
-// Normalisasi nomor HP murni angka saja
+// Helper pembersih angka
 function cleanNumber(str) {
     if (!str) return '';
     return String(str).replace(/[^0-9]/g, '');
@@ -55,22 +56,32 @@ function formatTo62(str) {
     return clean;
 }
 
-// Ekstraksi Nomor HP Pengirim (Menangani LID & JID Multi-Device)
+// Ekstraksi Nomor HP Pengirim yang Akurat (Handling Akun LID)
 function resolvePhoneNumber(msg) {
     let rawJid = msg.key.remoteJid || '';
     
+    // 1. Cek Metadata Alternatif Baileys (Multi-Device)
     if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
         rawJid = msg.key.remoteJidAlt;
     } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
         rawJid = msg.key.participantAlt;
+    } else if (msg.key.participant && msg.key.participant.endsWith('@s.whatsapp.net')) {
+        rawJid = msg.key.participant;
     }
 
+    // 2. Jika JID sudah berbentuk @s.whatsapp.net
     if (rawJid.endsWith('@s.whatsapp.net')) {
         return formatTo62(rawJid.split('@')[0].split(':')[0]);
     }
 
+    // 3. Jika JID berbentuk LID (@lid), cek apakah ada di cache memori kontak
     if (rawJid.endsWith('@lid') && lidToPhoneMap.has(rawJid)) {
         return lidToPhoneMap.get(rawJid);
+    }
+
+    // Jika pesan bertipe LID murni tanpa metadata nomor, return null agar tidak menganggap LID sebagai No HP
+    if (rawJid.endsWith('@lid')) {
+        return null; 
     }
 
     let possibleDigits = cleanNumber(rawJid.split('@')[0]);
@@ -79,31 +90,32 @@ function resolvePhoneNumber(msg) {
 
 // Fungsi Pencarian Mahasiswa yang Sangat Presisi & Fleksibel
 async function findMahasiswaByPhone(nomor62) {
-    if (!nomor62) return null;
+    // 1. Jika nomor terdeteksi murni
+    if (nomor62) {
+        const nomor08 = '0' + nomor62.slice(2);
+        const nomorPlus62 = '+' + nomor62;
 
-    const nomor08 = '0' + nomor62.slice(2);
-    const nomorPlus62 = '+' + nomor62;
+        const { data: directMatch } = await supabase
+            .from('mahasiswa')
+            .select('*')
+            .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
+            .maybeSingle();
 
-    // 1. Cek Pencarian Langsung Format Standar
-    const { data: directMatch, error } = await supabase
-        .from('mahasiswa')
-        .select('*')
-        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
-        .maybeSingle();
+        if (directMatch) return directMatch;
 
-    if (directMatch) return directMatch;
+        // Matching 9 digit terakhir
+        const { data: allMhs } = await supabase.from('mahasiswa').select('*');
+        if (allMhs && allMhs.length > 0) {
+            const lastDigitsSender = nomor62.slice(-9);
+            const matched = allMhs.find(mhs => {
+                const cleanDbNum = cleanNumber(mhs.nomor_wa);
+                return cleanDbNum.endsWith(lastDigitsSender);
+            });
+            if (matched) return matched;
+        }
+    }
 
-    // 2. Fallback: Ambil semua mahasiswa untuk dicocokkan digit akhirnya
-    const { data: allMhs } = await supabase.from('mahasiswa').select('*');
-    if (!allMhs || allMhs.length === 0) return null;
-
-    const lastDigitsSender = nomor62.slice(-9); // Ambil 9 digit terakhir
-    const matched = allMhs.find(mhs => {
-        const cleanDbNum = cleanNumber(mhs.nomor_wa);
-        return cleanDbNum.endsWith(lastDigitsSender);
-    });
-
-    return matched || null;
+    return null;
 }
 
 // ==========================================
@@ -129,6 +141,7 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // Menangkap pemetaan LID ke Nomor Telepon asli saat kontak diperbarui
     sock.ev.on('contacts.upsert', (contacts) => {
         for (const contact of contacts) {
             if (contact.id && contact.lid) {
@@ -192,16 +205,29 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Ekstraksi nomor HP pengirim
-                const nomor62 = resolvePhoneNumber(msg);
-                
-                // 2. Cari di database Supabase menggunakan fungsi pencarian fleksibel
+                // 1. Resolusi nomor HP pengirim
+                let nomor62 = resolvePhoneNumber(msg);
+
+                // 2. Jika masih gagal karena LID baru, manfaatkan Query Store Baileys
+                if (!nomor62 && rawFrom.endsWith('@lid')) {
+                    try {
+                        const [result] = await sock.onWhatsApp(rawFrom);
+                        if (result && result.jid) {
+                            nomor62 = formatTo62(result.jid.split('@')[0]);
+                            lidToPhoneMap.set(rawFrom, nomor62); // simpan di memori
+                        }
+                    } catch (e) {
+                        // ignore query error
+                    }
+                }
+
+                // 3. Cari di database Supabase
                 const dataMahasiswa = await findMahasiswaByPhone(nomor62);
 
                 let namaUser = dataMahasiswa?.nama || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(` [PESAN MASUK] JID: ${rawFrom} | Parsed Phone: ${nomor62 || 'Gagal Extract'} | Mahasiswa DB: ${dataMahasiswa ? dataMahasiswa.nama : 'TIDAK DITEMUKAN'} | Teks: "${teks}"`);
+                console.log(` [PESAN MASUK] JID: ${rawFrom} | Parsed Phone: ${nomor62 || 'LID/Gagal Parsed'} | Mahasiswa DB: ${dataMahasiswa ? dataMahasiswa.nama : 'TIDAK DITEMUKAN'} | Teks: "${teks}"`);
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
