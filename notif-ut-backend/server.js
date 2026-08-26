@@ -44,11 +44,11 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP
+// 3. INISIALISASI BOT WHATSAPP (FIX PAIRING CODE BROWSER)
 // ==========================================
 async function startBot() {
-    // Menggunakan folder v4 untuk membuang cache pautan yang rusak
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v4');
+    // Membawa auth state baileys_session_v3 milikmu
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -56,8 +56,8 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        // PERBAIKAN UTAMA: Menggunakan string browser Chrome resmi
-        browser: ['Chrome (Linux)', 'Chrome', '121.0.6167.160'],
+        // SOLUSI UTAMA PAIRING CODE: Menggunakan macOS/Chrome agar WhatsApp HP mau menerima kodenya
+        browser: ['Mac OS', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -80,11 +80,12 @@ async function startBot() {
                 
                 console.log('\n==================================================');
                 console.log(`🔑 KODE PAIRING WHATSAPP KAMU:  ${code}`);
-                console.log('==================================================\n');
+                console.log('==================================================');
+                console.log(`📲 MASUKKAN KODE DI ATAS KE HP: ${cleanNumber}\n`);
             } catch (err) {
                 console.error('❌ Gagal meminta Pairing Code:', err.message || err);
             }
-        }, 5000);
+        }, 6000);
     }
 
     sock.ev.on('creds.update', saveCreds);
@@ -164,7 +165,7 @@ async function startBot() {
                     dataMahasiswa = data;
                 }
 
-                // Penggunaan nama profil WA (msg.pushName) atau "Teman" jika tidak ada di DB
+                // Menggunakan pushName WA atau "Teman" jika nomor tidak ada di DB (Aman dari bug Mas Agus)
                 let namaUser = dataMahasiswa?.nama || msg.pushName || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
@@ -172,8 +173,6 @@ async function startBot() {
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
-                    console.log(`[PROSES STOP] Menerima perintah STOP untuk Mahasiswa ID: ${targetDbId}`);
-
                     if (!targetDbId) {
                         await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
                         continue;
