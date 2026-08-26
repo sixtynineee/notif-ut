@@ -35,7 +35,7 @@ let isReady = false;
 // NOMOR HP BOT WHATSAPP
 const BOT_PHONE_NUMBER = "6283148834649"; 
 
-// Mencegah crash akibat Bad MAC / Enkripsi Signal
+// Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt') || err.message.includes('prekey'))) {
         return;
@@ -113,7 +113,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (FIX ANTI-FREEZE)
+    // 4. AUTO-REPLY MESSAGES HANDLER (FIX STOP & UNSUBSCRIBE)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -134,7 +134,7 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // Ekstraksi Angka Nomor HP Asli
+                // Ekstraksi Angka Murni Nomor HP
                 let phoneDigits = "";
                 if (msg.key.participant) {
                     phoneDigits = msg.key.participant.split('@')[0].split(':')[0];
@@ -145,19 +145,21 @@ async function startBot() {
                 }
 
                 let nomorMurni = phoneDigits.replace(/[^0-9]/g, '');
+                
+                // Variasi Format Nomor HP untuk Kueri Database
                 let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
                 let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
                 let nomorPlus62 = '+' + nomor62;
 
-                console.log(`📩 [PESAN MASUK] Raw JID: ${rawFrom} | Nomor HP: ${nomor62} | Teks: "${teks}"`);
+                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Variasi Nomor: ${nomor62} / ${nomor08} | Teks: "${teks}"`);
 
-                // Cari nama hanya jika nomor valid (bukan LID dummy 14-15 digit acak)
+                // Cari nama user berdasarkan variasi nomor
                 let namaUser = 'Teman';
-                if (nomor62 && nomor62.length >= 10 && !nomor62.startsWith('2192') && !nomor62.startsWith('2583')) {
+                if (nomor62.length >= 10 && !nomor62.startsWith('2192') && !nomor62.startsWith('2583')) {
                     const { data } = await supabase
                         .from('mahasiswa')
                         .select('nama')
-                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
+                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62},nomor_wa.ilike.%${nomor08.slice(3)}%`)
                         .maybeSingle();
 
                     if (data && data.nama) {
@@ -167,22 +169,23 @@ async function startBot() {
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
-                    if (nomor62.length >= 10 && !nomor62.startsWith('2192') && !nomor62.startsWith('2583')) {
-                        const { data, error } = await supabase
-                            .from('mahasiswa')
-                            .update({ status_aktif: false })
-                            .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
-                            .select();
+                    console.log(`[PROSES STOP] Menerima perintah STOP dari nomor: ${nomor62}`);
 
-                        if (error) {
-                            await sock.sendMessage(rawFrom, { text: 'Waduh, maaf ya gagal proses penonaktifannya. Coba sebentar lagi ya!' }, { quoted: msg });
-                        } else if (!data || data.length === 0) {
-                            await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
-                        } else {
-                            await sock.sendMessage(rawFrom, { text: `Siap ${namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
-                        }
+                    const { data, error } = await supabase
+                        .from('mahasiswa')
+                        .update({ status_aktif: false })
+                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62},nomor_wa.ilike.%${nomor08.slice(3)}%`)
+                        .select();
+
+                    if (error) {
+                        console.error('❌ [DATABASE ERROR]:', error.message);
+                        await sock.sendMessage(rawFrom, { text: 'Waduh, maaf ya gagal memproses penonaktifan. Coba sebentar lagi ya!' }, { quoted: msg });
+                    } else if (!data || data.length === 0) {
+                        console.log('⚠️ Nomor tidak ditemukan di database saat proses STOP.');
+                        await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
                     } else {
-                        await sock.sendMessage(rawFrom, { text: 'Layanan pengingat dinonaktifkan.' }, { quoted: msg });
+                        console.log(`✅ [BERHASIL STOP] Status ${data[0].nama} berhasil diubah menjadi status_aktif = false`);
+                        await sock.sendMessage(rawFrom, { text: `Siap ${data[0].nama || namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
                     }
                     console.log(`✅ [AUTO-REPLY STOP] Terkirim ke ${rawFrom}`);
                     continue;
