@@ -113,7 +113,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (SOLUSI PENANGANAN LID & STOP)
+    // 4. AUTO-REPLY MESSAGES HANDLER (PRESISI 100%)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -133,7 +133,10 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Ekstraksi JID atau Nomor HP Asli Pengirim
+                // 1. Ambil nama tampilan pengirim langsung dari metadata WA
+                const pushName = msg.pushName || 'Kak';
+
+                // 2. Ekstraksi nomor HP murni
                 let realPhoneJid = "";
                 if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
                     realPhoneJid = msg.key.remoteJidAlt;
@@ -145,9 +148,8 @@ async function startBot() {
 
                 let nomorMurni = realPhoneJid ? realPhoneJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : "";
 
-                // 2. Pencarian Data Mahasiswa di Supabase
+                // 3. Cari data spesifik di Supabase
                 let dataMahasiswa = null;
-
                 if (nomorMurni) {
                     let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
                     let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
@@ -160,27 +162,16 @@ async function startBot() {
                         .maybeSingle();
 
                     dataMahasiswa = data;
-                } else {
-                    // Fallback: Jika metadata LID tidak membawa nomor HP, ambil dari mahasiswa aktif pertama
-                    const { data: listMhs } = await supabase
-                        .from('mahasiswa')
-                        .select('*')
-                        .eq('status_aktif', true);
-
-                    if (listMhs && listMhs.length > 0) {
-                        dataMahasiswa = listMhs[0];
-                    }
                 }
 
-                let namaUser = dataMahasiswa?.nama || 'Teman';
+                // Tentukan nama sapaan: Prioritas 1 Supabase -> Prioritas 2 PushName WA -> Fallback "Kak"
+                let namaUser = dataMahasiswa?.nama || pushName;
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Mahasiswa Terdeteksi: ${namaUser} | Teks: "${teks}"`);
+                console.log(`📩 [PESAN MASUK] JID: ${rawFrom} | Nama WA: ${pushName} | Nama DB: ${dataMahasiswa?.nama || 'N/A'} | Teks: "${teks}"`);
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
-                    console.log(`[PROSES STOP] Menerima perintah STOP untuk Mahasiswa ID: ${targetDbId}`);
-
                     if (!targetDbId) {
                         await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
                         continue;
@@ -195,11 +186,10 @@ async function startBot() {
                     if (error) {
                         console.error('❌ [DATABASE ERROR]:', error.message);
                         await sock.sendMessage(rawFrom, { text: 'Waduh, maaf ya gagal memproses penonaktifan. Coba sebentar lagi ya!' }, { quoted: msg });
-                    } else {
+                    } else if (data && data.length > 0) {
                         console.log(`✅ [BERHASIL STOP] Status ${data[0].nama} berhasil diubah menjadi status_aktif = false`);
                         await sock.sendMessage(rawFrom, { text: `Siap ${data[0].nama || namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
                     }
-                    console.log(`✅ [AUTO-REPLY STOP] Terkirim ke ${rawFrom}`);
                     continue;
                 }
 
@@ -224,7 +214,6 @@ async function startBot() {
                     balasanJadwal += `_Kalau kamu merasa terganggu dan mau berhenti dapat pengingat, tinggal balas *STOP* aja ya._`;
 
                     await sock.sendMessage(rawFrom, { text: balasanJadwal }, { quoted: msg });
-                    console.log(`✅ [AUTO-REPLY JADWAL] Terkirim ke ${rawFrom}`);
                     continue;
                 }
 
@@ -234,7 +223,6 @@ async function startBot() {
                     `• Ketik *STOP* : Kalau mau berhenti dapat pengingat harian.`;
 
                 await sock.sendMessage(rawFrom, { text: pesanBantuan }, { quoted: msg });
-                console.log(`✅ [AUTO-REPLY FALLBACK] Terkirim ke ${rawFrom}`);
 
             } catch (errInner) {
                 console.error('❌ Error isolasi pesan:', errInner.message || errInner);
