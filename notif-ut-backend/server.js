@@ -44,11 +44,10 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (SESI V14 BERSIH)
+// 3. INISIALISASI BOT WHATSAPP
 // ==========================================
 async function startBot() {
-    // Sesi v14 untuk mereset dari Reason Code 401
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v14');
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -56,7 +55,7 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ['Windows', 'Chrome', '121.0.6167.160'],
+        browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -79,8 +78,7 @@ async function startBot() {
                 
                 console.log('\n==================================================');
                 console.log(`🔑 KODE PAIRING WHATSAPP KAMU:  ${code}`);
-                console.log('==================================================');
-                console.log(`📲 SEGERA MASUKKAN KODE DI ATAS KE HP: ${cleanNumber}\n`);
+                console.log('==================================================\n');
             } catch (err) {
                 console.error('❌ Gagal meminta Pairing Code:', err.message || err);
             }
@@ -104,7 +102,7 @@ async function startBot() {
                 console.log('🔄 Reconnecting otomatis...');
                 setTimeout(() => startBot(), 3000);
             } else {
-                console.log('❌ Sesi Terputus/Log Out (Reason Code 401/Logged Out).');
+                console.log('❌ Sesi Terputus/Log Out.');
             }
         } else if (connection === 'open') {
             console.log('⏳ Menyinkronkan sesi WhatsApp...');
@@ -115,7 +113,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (ANALISIS PRESISI DATA MAHASISWA)
+    // 4. AUTO-REPLY MESSAGES HANDLER (FIX AKURAT LID & NAMA)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -135,10 +133,10 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Ambil nama bawaan profil WhatsApp pengirim jika ada
+                // Ambil pushName asli WA (jika ada)
                 const pushName = msg.pushName && msg.pushName.trim() ? msg.pushName.trim() : 'Kak';
 
-                // 2. Kumpulkan kandidat JID yang berpotensi menyimpan nomor HP
+                // Kumpulkan kandidat JID yang berpotensi menyokong nomor HP
                 let candidates = [];
                 if (msg.key.remoteJidAlt) candidates.push(msg.key.remoteJidAlt);
                 if (msg.key.participantAlt) candidates.push(msg.key.participantAlt);
@@ -147,11 +145,10 @@ async function startBot() {
 
                 let dataMahasiswa = null;
 
-                // 3. Cari di Supabase HANYA jika kandidat merupakan nomor HP valid (10-14 digit)
+                // Filter & cari ke Supabase HANYA jika kandidat adalah nomor HP valid (10-14 digit)
                 for (let candidate of candidates) {
                     let cleanedDigits = candidate.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
 
-                    // Abaikan jika string angka terlalu panjang (berarti ID @lid) atau terlalu pendek
                     if (!cleanedDigits || cleanedDigits.length < 10 || cleanedDigits.length > 14) continue;
 
                     let nomor62 = cleanedDigits.startsWith('0') ? '62' + cleanedDigits.slice(1) : cleanedDigits;
@@ -172,6 +169,7 @@ async function startBot() {
                     }
                 }
 
+                // Sapaan aman: DB Supabase ➔ PushName WA ➔ Fallback "Kak"
                 let namaUser = dataMahasiswa?.nama || pushName;
                 let isRegistered = !!dataMahasiswa;
                 let targetDbId = dataMahasiswa?.id || null;
