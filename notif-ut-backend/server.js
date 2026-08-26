@@ -8,10 +8,10 @@ const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const http = require('http');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal'); // Modul QR Code Terminal
+const qrcode = require('qrcode-terminal');
 
 // ==========================================
-// 1. SERVER HEALTH-CHECK (MENCEGAH RENDER SLEEP 24/7)
+// 1. SERVER HEALTH-CHECK (RENDER KEEP-ALIVE)
 // ==========================================
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
@@ -28,15 +28,12 @@ const SUPABASE_URL = "https://mzxrcslawziuvzqpwbjs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Memory Map untuk pemetaan akun LID ke Nomor HP
 const lidToPhoneMap = new Map();
-
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let sock;
 let isReady = false;
 
-// Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt') || err.message.includes('prekey'))) {
         return;
@@ -44,40 +41,69 @@ process.on('uncaughtException', (err) => {
     console.error(' Uncaught Exception:', err);
 });
 
-// Helper normalisasi nomor ke format 62xxx
-function cleanTo62(numberStr) {
-    if (!numberStr) return '';
-    let clean = String(numberStr).replace(/[^0-9]/g, '');
+// Normalisasi nomor HP murni angka saja
+function cleanNumber(str) {
+    if (!str) return '';
+    return String(str).replace(/[^0-9]/g, '');
+}
+
+function formatTo62(str) {
+    let clean = cleanNumber(str);
     if (clean.startsWith('0')) {
         clean = '62' + clean.slice(1);
     }
     return clean;
 }
 
-// Ekstraksi Nomor HP Pengirim (Menangani LID & Multi-Device JID)
+// Ekstraksi Nomor HP Pengirim (Menangani LID & JID Multi-Device)
 function resolvePhoneNumber(msg) {
     let rawJid = msg.key.remoteJid || '';
     
-    // 1. Cek Metadata Alternatif dari Payload Baileys
     if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
         rawJid = msg.key.remoteJidAlt;
     } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
         rawJid = msg.key.participantAlt;
     }
 
-    // 2. Jika JID berbentuk standar @s.whatsapp.net
     if (rawJid.endsWith('@s.whatsapp.net')) {
-        return cleanTo62(rawJid.split('@')[0].split(':')[0]);
+        return formatTo62(rawJid.split('@')[0].split(':')[0]);
     }
 
-    // 3. Jika JID berbentuk LID (@lid), cocokkan dengan cache memori
     if (rawJid.endsWith('@lid') && lidToPhoneMap.has(rawJid)) {
         return lidToPhoneMap.get(rawJid);
     }
 
-    // 4. Fallback ekstraksi digit nomor
-    let possibleDigits = rawJid.split('@')[0].replace(/[^0-9]/g, '');
-    return possibleDigits.length >= 10 ? possibleDigits : null;
+    let possibleDigits = cleanNumber(rawJid.split('@')[0]);
+    return possibleDigits.length >= 10 ? formatTo62(possibleDigits) : null;
+}
+
+// Fungsi Pencarian Mahasiswa yang Sangat Presisi & Fleksibel
+async function findMahasiswaByPhone(nomor62) {
+    if (!nomor62) return null;
+
+    const nomor08 = '0' + nomor62.slice(2);
+    const nomorPlus62 = '+' + nomor62;
+
+    // 1. Cek Pencarian Langsung Format Standar
+    const { data: directMatch, error } = await supabase
+        .from('mahasiswa')
+        .select('*')
+        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
+        .maybeSingle();
+
+    if (directMatch) return directMatch;
+
+    // 2. Fallback: Ambil semua mahasiswa untuk dicocokkan digit akhirnya
+    const { data: allMhs } = await supabase.from('mahasiswa').select('*');
+    if (!allMhs || allMhs.length === 0) return null;
+
+    const lastDigitsSender = nomor62.slice(-9); // Ambil 9 digit terakhir
+    const matched = allMhs.find(mhs => {
+        const cleanDbNum = cleanNumber(mhs.nomor_wa);
+        return cleanDbNum.endsWith(lastDigitsSender);
+    });
+
+    return matched || null;
 }
 
 // ==========================================
@@ -103,17 +129,15 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Event listener pemetaan LID -> Nomor HP
     sock.ev.on('contacts.upsert', (contacts) => {
         for (const contact of contacts) {
             if (contact.id && contact.lid) {
-                const phone = cleanTo62(contact.id.split('@')[0]);
+                const phone = formatTo62(contact.id.split('@')[0]);
                 lidToPhoneMap.set(contact.lid, phone);
             }
         }
     });
 
-    // Menangani pencetakan QR Code secara manual
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
@@ -121,7 +145,6 @@ async function startBot() {
             console.log('\n==================================================');
             console.log(' SCAN QR CODE DI BAWAH VIA WHATSAPP:');
             console.log('==================================================');
-            // Cetak QR Code dalam versi kecil (small) agar pas di layar log Render
             qrcode.generate(qr, { small: true });
             console.log('==================================================\n');
         }
@@ -159,7 +182,7 @@ async function startBot() {
                 if (!msg.message || msg.key.fromMe) continue;
 
                 const rawFrom = msg.key.remoteJid;
-                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan grup
+                if (!rawFrom || rawFrom.endsWith('@g.us')) continue;
 
                 const teks = (
                     msg.message.conversation ||
@@ -171,31 +194,20 @@ async function startBot() {
 
                 // 1. Ekstraksi nomor HP pengirim
                 const nomor62 = resolvePhoneNumber(msg);
-                let dataMahasiswa = null;
-
-                // 2. Pencarian data mahasiswa di database Supabase
-                if (nomor62) {
-                    const nomorSuffix = nomor62.length > 9 ? nomor62.slice(-9) : nomor62;
-
-                    const { data } = await supabase
-                        .from('mahasiswa')
-                        .select('*')
-                        .ilike('nomor_wa', `%${nomorSuffix}`)
-                        .maybeSingle();
-
-                    dataMahasiswa = data;
-                }
+                
+                // 2. Cari di database Supabase menggunakan fungsi pencarian fleksibel
+                const dataMahasiswa = await findMahasiswaByPhone(nomor62);
 
                 let namaUser = dataMahasiswa?.nama || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(` [PESAN MASUK] JID: ${rawFrom} | No Parsed: ${nomor62 || 'LID/Unknown'} | Mhs: ${namaUser} | Teks: "${teks}"`);
+                console.log(` [PESAN MASUK] JID: ${rawFrom} | Parsed Phone: ${nomor62 || 'Gagal Extract'} | Mahasiswa DB: ${dataMahasiswa ? dataMahasiswa.nama : 'TIDAK DITEMUKAN'} | Teks: "${teks}"`);
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
                     if (!targetDbId) {
                         await sock.sendMessage(rawFrom, { 
-                            text: 'Nomor WhatsApp kamu belum terdaftar di sistem pengingat kami. Kamu dapat mendaftar terlebih dahulu via website:\nhttps://notif-ut.vercel.app/' 
+                            text: 'Nomor WhatsApp kamu belum terdaftar di sistem pengingat kami. Kamu bisa mendaftar terlebih dahulu via website:\nhttps://notif-ut.vercel.app/' 
                         }, { quoted: msg });
                         continue;
                     }
@@ -275,7 +287,7 @@ async function kirimNotifikasiMassal(jadwal) {
     if (!daftarMahasiswa || daftarMahasiswa.length === 0) return;
 
     for (const mhs of daftarMahasiswa) {
-        let nomorBersih = cleanTo62(mhs.nomor_wa);
+        let nomorBersih = formatTo62(mhs.nomor_wa);
         if (!nomorBersih) continue;
 
         const targetJid = `${nomorBersih}@s.whatsapp.net`;
