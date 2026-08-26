@@ -35,9 +35,9 @@ let isReady = false;
 // NOMOR HP BOT WHATSAPP
 const BOT_PHONE_NUMBER = "6283148834649"; 
 
-// Abaikan uncaught error enkripsi internal agar bot tidak crash
+// Mencegah crash akibat Bad MAC / Enkripsi Signal
 process.on('uncaughtException', (err) => {
-    if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt'))) {
+    if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt') || err.message.includes('prekey'))) {
         return;
     }
     console.error('❌ Uncaught Exception:', err);
@@ -113,18 +113,19 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (GAYA MANUSIAWI)
+    // 4. AUTO-REPLY MESSAGES HANDLER (FIX ANTI-FREEZE)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
-        try {
-            if (m.type !== 'notify') return;
+        if (m.type !== 'notify') return;
 
-            for (const msg of m.messages) {
+        for (const msg of m.messages) {
+            try {
                 if (!msg.message || msg.key.fromMe) continue;
 
                 const rawFrom = msg.key.remoteJid;
                 if (!rawFrom || rawFrom.endsWith('@g.us')) continue;
 
+                // Ekstraksi Teks Pesan
                 const teks = (
                     msg.message.conversation ||
                     msg.message.extendedTextMessage?.text ||
@@ -133,6 +134,7 @@ async function startBot() {
 
                 if (!teks) continue;
 
+                // Ekstraksi Angka Nomor HP Asli
                 let phoneDigits = "";
                 if (msg.key.participant) {
                     phoneDigits = msg.key.participant.split('@')[0].split(':')[0];
@@ -149,8 +151,9 @@ async function startBot() {
 
                 console.log(`📩 [PESAN MASUK] Raw JID: ${rawFrom} | Nomor HP: ${nomor62} | Teks: "${teks}"`);
 
+                // Cari nama hanya jika nomor valid (bukan LID dummy 14-15 digit acak)
                 let namaUser = 'Teman';
-                if (nomor62 && !nomor62.startsWith('2192')) {
+                if (nomor62 && nomor62.length >= 10 && !nomor62.startsWith('2192') && !nomor62.startsWith('2583')) {
                     const { data } = await supabase
                         .from('mahasiswa')
                         .select('nama')
@@ -164,19 +167,24 @@ async function startBot() {
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
-                    const { data, error } = await supabase
-                        .from('mahasiswa')
-                        .update({ status_aktif: false })
-                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
-                        .select();
+                    if (nomor62.length >= 10 && !nomor62.startsWith('2192') && !nomor62.startsWith('2583')) {
+                        const { data, error } = await supabase
+                            .from('mahasiswa')
+                            .update({ status_aktif: false })
+                            .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
+                            .select();
 
-                    if (error) {
-                        await sock.sendMessage(rawFrom, { text: 'Waduh, maaf ya gagal proses penonaktifannya. Coba sebentar lagi ya!' }, { quoted: msg });
-                    } else if (!data || data.length === 0) {
-                        await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
+                        if (error) {
+                            await sock.sendMessage(rawFrom, { text: 'Waduh, maaf ya gagal proses penonaktifannya. Coba sebentar lagi ya!' }, { quoted: msg });
+                        } else if (!data || data.length === 0) {
+                            await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
+                        } else {
+                            await sock.sendMessage(rawFrom, { text: `Siap ${namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
+                        }
                     } else {
-                        await sock.sendMessage(rawFrom, { text: `Siap ${namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
+                        await sock.sendMessage(rawFrom, { text: 'Layanan pengingat dinonaktifkan.' }, { quoted: msg });
                     }
+                    console.log(`✅ [AUTO-REPLY STOP] Terkirim ke ${rawFrom}`);
                     continue;
                 }
 
@@ -201,6 +209,7 @@ async function startBot() {
                     balasanJadwal += `_Kalau kamu merasa terganggu dan mau berhenti dapat pengingat, tinggal balas *STOP* aja ya._`;
 
                     await sock.sendMessage(rawFrom, { text: balasanJadwal }, { quoted: msg });
+                    console.log(`✅ [AUTO-REPLY JADWAL] Terkirim ke ${rawFrom}`);
                     continue;
                 }
 
@@ -210,15 +219,16 @@ async function startBot() {
                     `• Ketik *STOP* : Kalau mau berhenti dapat pengingat harian.`;
 
                 await sock.sendMessage(rawFrom, { text: pesanBantuan }, { quoted: msg });
+                console.log(`✅ [AUTO-REPLY FALLBACK] Terkirim ke ${rawFrom}`);
+            } catch (errInner) {
+                console.error('❌ Error isolasi pesan:', errInner.message || errInner);
             }
-        } catch (err) {
-            console.error('❌ Error Handling Message:', err);
         }
     });
 }
 
 // ==========================================
-// 5. LOGIKA PENGIRIMAN NOTIFIKASI SCHEDULER (GAYA SANTAI & RAMAH)
+// 5. LOGIKA PENGIRIMAN NOTIFIKASI SCHEDULER
 // ==========================================
 async function kirimNotifikasiMassal(jadwal) {
     if (!sock || !isReady) return;
@@ -244,9 +254,7 @@ async function kirimNotifikasiMassal(jadwal) {
 
         const targetJid = `${nomorBersih}@s.whatsapp.net`;
 
-        // DRAFT PESAN BERDASARKAN TIPE PENGINGAT (RAMAH & SEPERTI TEMAN)
         let pesan = "";
-
         if (jadwal.tipe_pengingat === "SESI_BUKA") {
             pesan = `Halo ${mhs.nama}! 👋\n\nSekadar mengingatkan nih, *${jadwal.nama_sesi}* sudah dibuka yaa.\n\nDeadlineninya tanggal _${jadwal.deadline_non_praktik}_. Jangan lupa luangkan waktu buat buka elearning.ut.ac.id dan cicil diskusinya dari sekarang yaa biar nggak kewalahan nanti. Semangat! 😊`;
         } else if (jadwal.tipe_pengingat === "H-7 DEADLINE") {
@@ -261,7 +269,6 @@ async function kirimNotifikasiMassal(jadwal) {
             pesan = `Halo ${mhs.nama},\n\nJangan lupa ada info pengingat untuk *${jadwal.nama_sesi}* dengan batas waktu _${jadwal.deadline_non_praktik}_.\n\nSegera cek elearning.ut.ac.id yaa!`;
         }
 
-        // Penutup Pesan
         pesan += `\n\n-----------------------------------\n_Ketik *JADWAL* untuk cek kalender lengkap | Ketik *STOP* untuk berhenti pengingat._`;
 
         try {
