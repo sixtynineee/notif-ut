@@ -44,10 +44,11 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (KHUSUS PAIRING CODE)
+// 3. INISIALISASI BOT WHATSAPP (IDENTITAS WINDOWS CHROME)
 // ==========================================
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v8');
+    // Sesi v10 agar benar-benar bersih dari percobaan pautan gagal sebelumnya
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v10');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -55,7 +56,8 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ['Chrome (Linux)', 'Chrome', '121.0.6167.160'],
+        // MENGGANTI UBUNTU MENJADI WINDOWS
+        browser: ['Windows', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -259,7 +261,7 @@ async function kirimNotifikasiMassal(jadwal) {
         } else if (jadwal.tipe_pengingat === "H-3 DEADLINE") {
             pesan = `Halo ${mhs.nama}! ⚠️\n\nPengingat cepat yaa, deadline *${jadwal.nama_sesi}* sisa *3 hari lagi* nih (Batas akhir: _${jadwal.deadline_non_praktik}_).\n\nJangan sampai terlewat ya, yuk segera login dan selesaikan sebelum menumpuk!`;
         } else if (jadwal.tipe_pengingat === "H-1 DEADLINE") {
-            pesan = `Halo ${mhs.nama}! ⏰\n\nBesok sudah batas akhir untuk *${jadwal.nama_sesi}* nih (_${jadwal.deadline_non_praktik}_).\n\nPastikan jawaban diskusi atau tugas kamu me-upload jawaban di elearning.ut.ac.id yaa. Semangat sedikit lagi! 🔥`;
+            pesan = `Halo ${mhs.nama}! ⏰\n\nBesok sudah batas akhir untuk *${jadwal.nama_sesi}* nih (_${jadwal.deadline_non_praktik}_).\n\nPastikan jawaban diskusi atau tugas kamu di-upload di elearning.ut.ac.id yaa. Semangat sedikit lagi! 🔥`;
         } else if (jadwal.tipe_pengingat === "HARI-H DEADLINE") {
             pesan = `Halo ${mhs.nama}! 🚨\n\nHari ini *DEADLINE TERAKHIR* untuk *${jadwal.nama_sesi}* yaa!\n\nBatas waktu pengunggahan sampai pukul 23.59 WIB malam ini. Kalau belum selesai, yuk segera dikerjakan dan di-upload di elearning.ut.ac.id sekarang juga biar nilainya nggak kosong! 🙏`;
         } else {
