@@ -44,10 +44,11 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP
+// 3. INISIALISASI BOT WHATSAPP (SESI BERSIH V4)
 // ==========================================
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
+    // Menggunakan baileys_session_v4 untuk membuang kunci pendaftaran lama yang terkunci
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v4');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -55,7 +56,8 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
+        // Format browser resmi agar pautan Pairing Code tidak ditolak WhatsApp
+        browser: ['Chrome (Linux)', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -78,7 +80,8 @@ async function startBot() {
                 
                 console.log('\n==================================================');
                 console.log(`🔑 KODE PAIRING WHATSAPP KAMU:  ${code}`);
-                console.log('==================================================\n');
+                console.log('==================================================');
+                console.log(`📲 SEGERA MASUKKAN KODE DI ATAS KE HP: ${cleanNumber}\n`);
             } catch (err) {
                 console.error('❌ Gagal meminta Pairing Code:', err.message || err);
             }
@@ -113,7 +116,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (FIX IDENTITAS & MULTI-SEARCH)
+    // 4. AUTO-REPLY MESSAGES HANDLER
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -133,7 +136,7 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Kumpulkan semua kemungkinan ID / Nomor HP dari metadata Baileys
+                // 1. Kumpulkan seluruh variabel pengirim dari payload
                 let candidates = [];
                 if (msg.key.remoteJidAlt) candidates.push(msg.key.remoteJidAlt);
                 if (msg.key.participantAlt) candidates.push(msg.key.participantAlt);
@@ -142,7 +145,7 @@ async function startBot() {
 
                 let dataMahasiswa = null;
 
-                // 2. Ekstraksi angka dan cari ke Supabase
+                // 2. Cari ke database berdasarkan nomor telepon murni
                 for (let candidate of candidates) {
                     let cleanedDigits = candidate.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
                     if (!cleanedDigits) continue;
@@ -151,7 +154,6 @@ async function startBot() {
                     let nomor08 = cleanedDigits.startsWith('62') ? '0' + cleanedDigits.slice(2) : cleanedDigits;
                     let nomorPlus62 = '+' + nomor62;
 
-                    // Ekstrak suffix nomor HP murni (mengabaikan prefix LID panjang)
                     let suffix = nomor08.length > 8 ? nomor08.slice(-8) : nomor08;
 
                     const { data } = await supabase
@@ -162,7 +164,7 @@ async function startBot() {
 
                     if (data) {
                         dataMahasiswa = data;
-                        break; // Hentikan pencarian jika sudah ditemukan
+                        break;
                     }
                 }
 
