@@ -32,7 +32,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
-// NOMOR HP BOT WHATSAPP (Format Wajib 62 tanpa angka 0 di depan)
+// NOMOR HP BOT WHATSAPP
 const BOT_PHONE_NUMBER = "6283148834649"; 
 
 // Mencegah crash akibat Uncaught Error enkripsi Signal
@@ -44,9 +44,10 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (SESI V13)
+// 3. INISIALISASI BOT WHATSAPP (MENGGUNAKAN SESI V13 SAMA)
 // ==========================================
 async function startBot() {
+    // Tetap gunakan baileys_session_v13 agar sesi pautan yang berhasil tidak hilang
     const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v13');
     const { version } = await fetchLatestBaileysVersion();
 
@@ -134,7 +135,7 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Kumpulkan seluruh kemungkinan ID / Nomor HP dari metadata Baileys
+                // 1. Kumpulkan seluruh kandidat JID/Nomor HP dari metadata
                 let candidates = [];
                 if (msg.key.remoteJidAlt) candidates.push(msg.key.remoteJidAlt);
                 if (msg.key.participantAlt) candidates.push(msg.key.participantAlt);
@@ -143,7 +144,7 @@ async function startBot() {
 
                 let dataMahasiswa = null;
 
-                // 2. Loop & Cari ke Supabase berdasarkan digit nomor HP murni
+                // 2. Loop pencarian ke Supabase berdasarkan digit nomor HP murni
                 for (let candidate of candidates) {
                     let cleanedDigits = candidate.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
                     if (!cleanedDigits) continue;
@@ -152,7 +153,6 @@ async function startBot() {
                     let nomor08 = cleanedDigits.startsWith('62') ? '0' + cleanedDigits.slice(2) : cleanedDigits;
                     let nomorPlus62 = '+' + nomor62;
 
-                    // Mengambil 8-9 digit terakhir untuk pencarian toleran
                     let suffix = nomor08.length > 8 ? nomor08.slice(-8) : nomor08;
 
                     const { data } = await supabase
@@ -167,7 +167,7 @@ async function startBot() {
                     }
                 }
 
-                // Sapaan: Prioritas 1 Supabase ➔ Prioritas 2 Nama WhatsApp ➔ Fallback "Kak"
+                // Sapaan: Prioritas 1 Supabase -> Prioritas 2 PushName WA -> Fallback "Kak"
                 let namaUser = dataMahasiswa?.nama || msg.pushName || 'Kak';
                 let isRegistered = !!dataMahasiswa;
                 let targetDbId = dataMahasiswa?.id || null;
@@ -233,6 +233,8 @@ async function startBot() {
             }
         }
     });
+}
+
 // ==========================================
 // 5. LOGIKA PENGIRIMAN NOTIFIKASI SCHEDULER
 // ==========================================
