@@ -4,7 +4,6 @@ const {
     DisconnectReason, 
     fetchLatestBaileysVersion 
 } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const http = require('http');
@@ -33,7 +32,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
-// Abaikan error enkripsi Signal internal agar server tidak restart/crash
+// ==========================================
+// ⚠️ MASUKKAN NOMOR HP WHATSAPP BOT KAMU DI SINI ⚠️
+// Format: Gunakan kode negara 62 di depan (Contoh: "6289523136633")
+// ==========================================
+const BOT_PHONE_NUMBER = "6289523136633"; 
+
+// Ignore Uncaught Exception
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt'))) {
         return;
@@ -42,7 +47,7 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP
+// 3. INISIALISASI BOT WHATSAPP (PAIRING CODE ENGINE)
 // ==========================================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_auth');
@@ -51,9 +56,9 @@ async function startBot() {
     sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: false, // Mematikan QR Code
         logger: pino({ level: 'silent' }),
-        browser: ['Notif-UT Bot', 'Chrome', '1.0.0'],
+        browser: ['Ubuntu', 'Chrome', '20.0.04'], // Browser identity agar pairing code stabil
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -63,15 +68,33 @@ async function startBot() {
         }
     });
 
+    // MINTA PAIRING CODE JIKA BELUM LOGIN / BELUM ADA SESI
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                let cleanNumber = BOT_PHONE_NUMBER.replace(/[^0-9]/g, '');
+                let code = await sock.requestPairingCode(cleanNumber);
+                code = code?.match(/.{1,4}/g)?.join('-') || code;
+                
+                console.log('\n==================================================');
+                console.log(`🔑 KODE PAIRING WHATSAPP KAMU:  ${code}`);
+                console.log('==================================================');
+                console.log('📱 CARA MENAUTKAN PERANGKAT:');
+                console.log('1. Buka WhatsApp di HP kamu');
+                console.log('2. Ketuk titik tiga di pojok kanan atas > Perangkat Tertaut');
+                console.log('3. Ketuk "Tautkan Perangkat"');
+                console.log('4. Ketuk "Tautkan dengan nomor telepon saja" di bagian bawah');
+                console.log(`5. Masukkan kode 8 digit di atas: ${code}\n`);
+            } catch (err) {
+                console.error('❌ Gagal meminta Pairing Code:', err);
+            }
+        }, 3000);
+    }
+
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            console.log('\n=== SCAN QR CODE DI BAWAH INI DENGAN WHATSAPP HP KAMU ===\n');
-            qrcode.generate(qr, { small: true });
-        }
+        const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
             isReady = false;
@@ -206,7 +229,7 @@ async function startBot() {
 }
 
 // ==========================================
-// 5. LOGIKA PENGIRIMAN PESAN MASSAL (FIXED FOR DIRECT SCHEDULER DELIVERY)
+// 5. LOGIKA PENGIRIMAN PESAN MASSAL
 // ==========================================
 async function kirimNotifikasiMassal(jadwal) {
     if (!sock || !isReady) {
@@ -214,7 +237,6 @@ async function kirimNotifikasiMassal(jadwal) {
         return;
     }
 
-    // Kunci status di Supabase segera agar tidak terkirim ganda oleh Cronjob
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
 
     console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
@@ -239,7 +261,6 @@ async function kirimNotifikasiMassal(jadwal) {
             nomorBersih = '62' + nomorBersih.slice(1);
         }
 
-        // Tentukan JID tujuan langsung berbasis nomor HP Indonesia (@s.whatsapp.net)
         const targetJid = `${nomorBersih}@s.whatsapp.net`;
 
         let headerNotif = "📢 [NOTIF-UT] Pengingat Sesi Baru";
@@ -251,7 +272,6 @@ async function kirimNotifikasiMassal(jadwal) {
         const pesan = `${headerNotif}\n\nHalo *${mhs.nama}* (${mhs.jurusan}),\nBerikut pengingat batas waktu untuk *${jadwal.nama_sesi}*:\n\n📘 Deadline Sesi : _${jadwal.deadline_non_praktik}_\n\n⚠️ _Segera selesaikan dan unggah tugas/diskusi kamu di elearning.ut.ac.id sebelum pukul 23.59 WIB!_\n-----------------------------------\n_Ketik *JADWAL* untuk cek kalender lengkap | Ketik *STOP* untuk berhenti._`;
 
         try {
-            // Langsung kirim pesan tanpa memfilter via sock.onWhatsApp yang sering drop JID
             await sock.sendMessage(targetJid, { text: pesan });
             console.log(`✅ Pesan notifikasi scheduler terkirim ke: ${mhs.nama} (${targetJid})`);
 
