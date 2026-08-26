@@ -2,8 +2,7 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion,
-    makeInMemoryStore
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
@@ -22,15 +21,14 @@ http.createServer((req, res) => {
 });
 
 // ==========================================
-// 2. KONFIGURASI SUPABASE & STORE
+// 2. KONFIGURASI SUPABASE & MEMORY STORE
 // ==========================================
 const SUPABASE_URL = "https://mzxrcslawziuvzqpwbjs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// In-Memory Store Baileys untuk memetakan Kontak & LID ke Nomor HP
-const logger = pino({ level: 'silent' });
-const store = makeInMemoryStore({ logger });
+// Memory Store Manual untuk memetakan LID ke Nomor HP
+const lidToPhoneMap = new Map();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -55,8 +53,8 @@ function cleanTo62(numberStr) {
     return clean;
 }
 
-// Ekstraksi Nomor HP Pengirim yang mendukung LID & Multi-Device
-async function resolvePhoneNumber(msg, sockInstance) {
+// Ekstraksi Nomor HP Pengirim (Menangani LID & JID Multi-Device)
+function resolvePhoneNumber(msg) {
     let rawJid = msg.key.remoteJid || '';
     
     // 1. Cek Metadata Alternatif Baileys
@@ -66,20 +64,17 @@ async function resolvePhoneNumber(msg, sockInstance) {
         rawJid = msg.key.participantAlt;
     }
 
-    // 2. Jika JID sudah berbentuk @s.whatsapp.net
+    // 2. Jika JID berbentuk @s.whatsapp.net
     if (rawJid.endsWith('@s.whatsapp.net')) {
         return cleanTo62(rawJid.split('@')[0].split(':')[0]);
     }
 
-    // 3. Jika JID berbentuk LID (@lid), cari di Contacts Store
-    if (rawJid.endsWith('@lid') && store.contacts) {
-        const contact = store.contacts[rawJid];
-        if (contact && contact.id && contact.id.endsWith('@s.whatsapp.net')) {
-            return cleanTo62(contact.id.split('@')[0]);
-        }
+    // 3. Jika JID berbentuk LID, cek pemetaan di Map memori
+    if (rawJid.endsWith('@lid') && lidToPhoneMap.has(rawJid)) {
+        return lidToPhoneMap.get(rawJid);
     }
 
-    // 4. Fallback jika masih LID
+    // 4. Fallback: Ekstraksi digit nomor
     let possibleDigits = rawJid.split('@')[0].replace(/[^0-9]/g, '');
     return possibleDigits.length >= 10 ? possibleDigits : null;
 }
@@ -95,7 +90,7 @@ async function startBot() {
         version,
         auth: state,
         printQRInTerminal: false,
-        logger,
+        logger: pino({ level: 'silent' }),
         browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -105,9 +100,6 @@ async function startBot() {
             return { conversation: '' };
         }
     });
-
-    // Hubungkan store dengan event Baileys
-    store?.bind(sock.ev);
 
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
@@ -126,6 +118,16 @@ async function startBot() {
     }
 
     sock.ev.on('creds.update', saveCreds);
+
+    // Memetakan secara otomatis saat ada event update kontak (LID -> Phone JID)
+    sock.ev.on('contacts.update', (contacts) => {
+        for (const contact of contacts) {
+            if (contact.id && contact.lid) {
+                const phone = cleanTo62(contact.id.split('@')[0]);
+                lidToPhoneMap.set(contact.lid, phone);
+            }
+        }
+    });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
@@ -173,11 +175,11 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Dapatkan nomor murni pengirim
-                const nomor62 = await resolvePhoneNumber(msg, sock);
+                // Dapatkan nomor murni pengirim
+                const nomor62 = resolvePhoneNumber(msg);
                 let dataMahasiswa = null;
 
-                // 2. Pencarian Fleksibel di Supabase
+                // Pencarian Fleksibel di Supabase
                 if (nomor62) {
                     const nomorSuffix = nomor62.length > 9 ? nomor62.slice(-9) : nomor62;
 
