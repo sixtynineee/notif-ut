@@ -44,17 +44,16 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (SESI BERSIH V6)
+// 3. INISIALISASI BOT WHATSAPP (SESI V7 BERSIH)
 // ==========================================
 async function startBot() {
-    // Menggunakan baileys_session_v6 untuk mereset cache sesi yang terikat/rusak
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v6');
+    // Menggunakan baileys_session_v7 untuk mereset cache sesi
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v7');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: true, // Mengaktifkan QR Code di terminal sebagai cadangan
         logger: pino({ level: 'silent' }),
         browser: ['Chrome (Linux)', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
@@ -80,10 +79,9 @@ async function startBot() {
                 console.log('\n==================================================');
                 console.log(`🔑 KODE PAIRING WHATSAPP KAMU:  ${code}`);
                 console.log('==================================================');
-                console.log(`📲 MASUKKAN KODE DI ATAS KE HP: ${cleanNumber}`);
-                console.log(`📷 ATAU SCAN QR CODE DI ATAS JIKA PAIRING CODE ERROR\n`);
+                console.log(`📲 SEGERA MASUKKAN KODE DI ATAS KE HP: ${cleanNumber}\n`);
             } catch (err) {
-                console.error('⚠️ Gagal meminta Pairing Code (Bisa gunakan Scan QR di atas):', err.message || err);
+                console.error('❌ Gagal meminta Pairing Code:', err.message || err);
             }
         }, 5000);
     }
@@ -136,7 +134,6 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Kumpulkan seluruh kandidat pengirim dari metadata
                 let candidates = [];
                 if (msg.key.remoteJidAlt) candidates.push(msg.key.remoteJidAlt);
                 if (msg.key.participantAlt) candidates.push(msg.key.participantAlt);
@@ -145,7 +142,6 @@ async function startBot() {
 
                 let dataMahasiswa = null;
 
-                // 2. Kueri pencarian berdasarkan nomor HP murni
                 for (let candidate of candidates) {
                     let cleanedDigits = candidate.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
                     if (!cleanedDigits) continue;
@@ -176,8 +172,6 @@ async function startBot() {
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
-                    console.log(`[PROSES STOP] Menerima perintah STOP untuk Mahasiswa ID: ${targetDbId}`);
-
                     if (!isRegistered || !targetDbId) {
                         await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
                         continue;
