@@ -44,7 +44,7 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (KODE ASLI SESI V3)
+// 3. INISIALISASI BOT WHATSAPP
 // ==========================================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
@@ -113,7 +113,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (FIX IDENTITAS PENGIRIM)
+    // 4. AUTO-REPLY MESSAGES HANDLER
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -162,9 +162,8 @@ async function startBot() {
                     dataMahasiswa = data;
                 }
 
-                // 3. Nama Sapaan Safely Handled (Supabase -> PushName WhatsApp -> Fallback "Kak")
-                let pushName = msg.pushName || 'Kak';
-                let namaUser = dataMahasiswa?.nama || pushName;
+                // FIX: Gunakan nama profil WA (msg.pushName) atau "Teman" jika nomor tidak terdaftar (TIDAK MEMANGGIL NAMA ORANG LAIN)
+                let namaUser = dataMahasiswa?.nama || msg.pushName || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
                 console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Terdaftar: ${!!dataMahasiswa} | Nama: ${namaUser} | Teks: "${teks}"`);
