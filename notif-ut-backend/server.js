@@ -114,7 +114,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER
+    // 4. AUTO-REPLY MESSAGES HANDLER (FIX IDENTITAS LID & NOMOR HP)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -134,40 +134,49 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                let realPhoneJid = "";
-                if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
-                    realPhoneJid = msg.key.remoteJidAlt;
-                } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
-                    realPhoneJid = msg.key.participantAlt;
-                } else if (rawFrom.endsWith('@s.whatsapp.net')) {
-                    realPhoneJid = rawFrom;
-                }
-
-                let nomorMurni = realPhoneJid ? realPhoneJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : "";
+                // 1. Kumpulkan seluruh kemungkinan ID / Nomor HP dari metadata Baileys
+                let candidates = [];
+                if (msg.key.remoteJidAlt) candidates.push(msg.key.remoteJidAlt);
+                if (msg.key.participantAlt) candidates.push(msg.key.participantAlt);
+                if (msg.key.participant) candidates.push(msg.key.participant);
+                if (rawFrom) candidates.push(rawFrom);
 
                 let dataMahasiswa = null;
 
-                if (nomorMurni) {
-                    let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
-                    let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
+                // 2. Loop & Cari ke Supabase berdasarkan digit nomor HP murni
+                for (let candidate of candidates) {
+                    let cleanedDigits = candidate.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+                    if (!cleanedDigits) continue;
+
+                    let nomor62 = cleanedDigits.startsWith('0') ? '62' + cleanedDigits.slice(1) : cleanedDigits;
+                    let nomor08 = cleanedDigits.startsWith('62') ? '0' + cleanedDigits.slice(2) : cleanedDigits;
                     let nomorPlus62 = '+' + nomor62;
+
+                    // Mengambil 8-9 digit terakhir untuk pencarian toleran
+                    let suffix = nomor08.length > 8 ? nomor08.slice(-8) : nomor08;
 
                     const { data } = await supabase
                         .from('mahasiswa')
                         .select('*')
-                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
+                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62},nomor_wa.ilike.%${suffix}`)
                         .maybeSingle();
 
-                    dataMahasiswa = data;
+                    if (data) {
+                        dataMahasiswa = data;
+                        break;
+                    }
                 }
 
-                let namaUser = dataMahasiswa?.nama || msg.pushName || 'Teman';
+                // Sapaan: Prioritas 1 Supabase ➔ Prioritas 2 Nama WhatsApp ➔ Fallback "Kak"
+                let namaUser = dataMahasiswa?.nama || msg.pushName || 'Kak';
+                let isRegistered = !!dataMahasiswa;
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Terdaftar: ${!!dataMahasiswa} | Nama: ${namaUser} | Teks: "${teks}"`);
+                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Terdaftar: ${isRegistered} | Nama: ${namaUser} | Teks: "${teks}"`);
 
+                // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
-                    if (!targetDbId) {
+                    if (!isRegistered || !targetDbId) {
                         await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
                         continue;
                     }
@@ -188,6 +197,7 @@ async function startBot() {
                     continue;
                 }
 
+                // B. FITUR CEK JADWAL
                 if (teks === 'JADWAL' || teks === 'INFO' || teks === 'CEK JADWAL') {
                     const { data: daftarJadwal, error } = await supabase
                         .from('jadwal_tuton')
@@ -211,6 +221,7 @@ async function startBot() {
                     continue;
                 }
 
+                // C. BANTUAN / FALLBACK UNTUK PESAN SEMBARANGAN
                 const pesanBantuan = `Halo ${namaUser}! 👋\n\nAku pesan otomatis pengingat Tuton UT. Biar gampang, ini beberapa perintah yang bisa kamu ketik:\n\n` +
                     `• Ketik *JADWAL* : Untuk lihat kalender & deadline Tuton.\n` +
                     `• Ketik *STOP* : Kalau mau berhenti dapat pengingat harian.`;
@@ -222,8 +233,6 @@ async function startBot() {
             }
         }
     });
-}
-
 // ==========================================
 // 5. LOGIKA PENGIRIMAN NOTIFIKASI SCHEDULER
 // ==========================================
