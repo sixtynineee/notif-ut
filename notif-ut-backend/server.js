@@ -27,15 +27,15 @@ const SUPABASE_URL = "https://mzxrcslawziuvzqpwbjs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Memory Store Manual untuk memetakan LID ke Nomor HP
+// Memory Map untuk pemetaan akun LID ke Nomor HP
 const lidToPhoneMap = new Map();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let sock;
 let isReady = false;
-const BOT_PHONE_NUMBER = "6283148834649";
 
+// Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt') || err.message.includes('prekey'))) {
         return;
@@ -53,34 +53,34 @@ function cleanTo62(numberStr) {
     return clean;
 }
 
-// Ekstraksi Nomor HP Pengirim (Menangani LID & JID Multi-Device)
+// Ekstraksi Nomor HP Pengirim (Menangani LID & Multi-Device JID)
 function resolvePhoneNumber(msg) {
     let rawJid = msg.key.remoteJid || '';
     
-    // 1. Cek Metadata Alternatif Baileys
+    // 1. Cek Metadata Alternatif dari Payload Baileys
     if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
         rawJid = msg.key.remoteJidAlt;
     } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
         rawJid = msg.key.participantAlt;
     }
 
-    // 2. Jika JID berbentuk @s.whatsapp.net
+    // 2. Jika JID berbentuk standar @s.whatsapp.net
     if (rawJid.endsWith('@s.whatsapp.net')) {
         return cleanTo62(rawJid.split('@')[0].split(':')[0]);
     }
 
-    // 3. Jika JID berbentuk LID, cek pemetaan di Map memori
+    // 3. Jika JID berbentuk LID (@lid), cocokkan dengan cache memori
     if (rawJid.endsWith('@lid') && lidToPhoneMap.has(rawJid)) {
         return lidToPhoneMap.get(rawJid);
     }
 
-    // 4. Fallback: Ekstraksi digit nomor
+    // 4. Fallback ekstraksi digit nomor
     let possibleDigits = rawJid.split('@')[0].replace(/[^0-9]/g, '');
     return possibleDigits.length >= 10 ? possibleDigits : null;
 }
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP
+// 3. INISIALISASI BOT WHATSAPP (SCAN QR MODE)
 // ==========================================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
@@ -89,7 +89,7 @@ async function startBot() {
     sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: true, // METODE SCAN QR CODE DI AKTIFKAN
         logger: pino({ level: 'silent' }),
         browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
@@ -101,26 +101,10 @@ async function startBot() {
         }
     });
 
-    if (!sock.authState.creds.registered) {
-        setTimeout(async () => {
-            try {
-                let cleanNumber = cleanTo62(BOT_PHONE_NUMBER);
-                let code = await sock.requestPairingCode(cleanNumber);
-                code = code?.match(/.{1,4}/g)?.join('-') || code;
-                
-                console.log('\n==================================================');
-                console.log(` KODE PAIRING WHATSAPP KAMU:  ${code}`);
-                console.log('==================================================\n');
-            } catch (err) {
-                console.error(' Gagal meminta Pairing Code:', err.message || err);
-            }
-        }, 5000);
-    }
-
     sock.ev.on('creds.update', saveCreds);
 
-    // Memetakan secara otomatis saat ada event update kontak (LID -> Phone JID)
-    sock.ev.on('contacts.update', (contacts) => {
+    // Event listener penangkapan update kontak untuk pemetaan LID -> Nomor HP
+    sock.ev.on('contacts.upsert', (contacts) => {
         for (const contact of contacts) {
             if (contact.id && contact.lid) {
                 const phone = cleanTo62(contact.id.split('@')[0]);
@@ -130,7 +114,13 @@ async function startBot() {
     });
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log('\n==================================================');
+            console.log(' SILAKAN SCAN QR CODE DI ATAS MENGGUNAKAN WHATSAPP');
+            console.log('==================================================\n');
+        }
 
         if (connection === 'close') {
             isReady = false;
@@ -150,7 +140,7 @@ async function startBot() {
             console.log(' Menyinkronkan sesi WhatsApp...');
             await sleep(3000);
             isReady = true;
-            console.log('\n WhatsApp Client (Baileys) Berhasil Terhubung & Siap 100%!\n');
+            console.log('\n WhatsApp Client (Baileys Engine) Berhasil Terhubung & Siap 100%!\n');
         }
     });
 
@@ -165,7 +155,7 @@ async function startBot() {
                 if (!msg.message || msg.key.fromMe) continue;
 
                 const rawFrom = msg.key.remoteJid;
-                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan pesan grup
+                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan pesan dari grup
 
                 const teks = (
                     msg.message.conversation ||
@@ -175,11 +165,11 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // Dapatkan nomor murni pengirim
+                // 1. Ekstraksi nomor HP pengirim
                 const nomor62 = resolvePhoneNumber(msg);
                 let dataMahasiswa = null;
 
-                // Pencarian Fleksibel di Supabase
+                // 2. Pencarian data mahasiswa di database Supabase
                 if (nomor62) {
                     const nomorSuffix = nomor62.length > 9 ? nomor62.slice(-9) : nomor62;
 
@@ -195,13 +185,13 @@ async function startBot() {
                 let namaUser = dataMahasiswa?.nama || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(` [PESAN MASUK] Raw JID: ${rawFrom} | No Parsed: ${nomor62 || 'LID/Unknown'} | Mhs: ${namaUser} | Teks: "${teks}"`);
+                console.log(` [PESAN MASUK] JID: ${rawFrom} | No Parsed: ${nomor62 || 'LID/Unknown'} | Mhs: ${namaUser} | Teks: "${teks}"`);
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
                     if (!targetDbId) {
                         await sock.sendMessage(rawFrom, { 
-                            text: 'Nomor WhatsApp kamu belum terdaftar di sistem pengingat kami. Kamu bisa mendaftar terlebih dahulu melalui website:\nhttps://notif-ut.vercel.app/' 
+                            text: 'Nomor WhatsApp kamu belum terdaftar di sistem pengingat kami. Kamu dapat mendaftar terlebih dahulu via website:\nhttps://notif-ut.vercel.app/' 
                         }, { quoted: msg });
                         continue;
                     }
@@ -214,12 +204,12 @@ async function startBot() {
 
                     if (error) {
                         console.error(' [DATABASE ERROR STOP]:', error.message);
-                        await sock.sendMessage(rawFrom, { text: 'Maaf, gagal memproses penonaktifan. Silakan coba lagi beberapa saat lagi.' }, { quoted: msg });
+                        await sock.sendMessage(rawFrom, { text: 'Maaf, gagal memproses penonaktifan pengingat. Silakan coba lagi beberapa saat lagi.' }, { quoted: msg });
                     } else {
                         const mhsUpdated = data && data[0] ? data[0] : dataMahasiswa;
                         console.log(` [BERHASIL STOP] Status ${mhsUpdated.nama} diubah menjadi status_aktif = false`);
                         await sock.sendMessage(rawFrom, { 
-                            text: `Siap ${mhsUpdated.nama}, pengingat Tuton kamu telah dinonaktifkan.\n\nJika nanti mau diaktifkan lagi, kamu bisa daftar ulang kapan saja melalui website kami di:\nhttps://notif-ut.vercel.app/\n\nSemangat kuliahnya!` 
+                            text: `Siap ${mhsUpdated.nama}, pengingat Tuton kamu telah dinonaktifkan.\n\nJika nanti ingin mengaktifkan kembali, kamu bisa daftar ulang kapan saja via website kami di:\nhttps://notif-ut.vercel.app/\n\nSemangat kuliahnya!` 
                         }, { quoted: msg });
                     }
                     continue;
