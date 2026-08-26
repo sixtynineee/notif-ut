@@ -113,7 +113,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (FIX IDENTITY BUG)
+    // 4. AUTO-REPLY MESSAGES HANDLER (FIX IDENTITAS & MULTI-SEARCH)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -133,62 +133,52 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Ekstraksi Nomor HP Pengirim yang Akurat
-                let extractedPhone = "";
+                // 1. Kumpulkan semua kemungkinan ID / Nomor HP dari metadata Baileys
+                let candidates = [];
+                if (msg.key.remoteJidAlt) candidates.push(msg.key.remoteJidAlt);
+                if (msg.key.participantAlt) candidates.push(msg.key.participantAlt);
+                if (msg.key.participant) candidates.push(msg.key.participant);
+                if (rawFrom) candidates.push(rawFrom);
 
-                if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
-                    extractedPhone = msg.key.remoteJidAlt.split('@')[0];
-                } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
-                    extractedPhone = msg.key.participantAlt.split('@')[0];
-                } else if (msg.key.participant && msg.key.participant.endsWith('@s.whatsapp.net')) {
-                    extractedPhone = msg.key.participant.split('@')[0];
-                } else if (rawFrom.endsWith('@s.whatsapp.net')) {
-                    extractedPhone = rawFrom.split('@')[0];
-                }
-
-                let nomorMurni = extractedPhone.replace(/[^0-9]/g, '');
-
-                // 2. Kueri Spesifik ke Supabase
                 let dataMahasiswa = null;
 
-                if (nomorMurni && nomorMurni.length >= 10 && !nomorMurni.startsWith('2192') && !nomorMurni.startsWith('2095')) {
-                    let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
-                    let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
+                // 2. Ekstraksi angka dan cari ke Supabase
+                for (let candidate of candidates) {
+                    let cleanedDigits = candidate.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+                    if (!cleanedDigits) continue;
+
+                    let nomor62 = cleanedDigits.startsWith('0') ? '62' + cleanedDigits.slice(1) : cleanedDigits;
+                    let nomor08 = cleanedDigits.startsWith('62') ? '0' + cleanedDigits.slice(2) : cleanedDigits;
                     let nomorPlus62 = '+' + nomor62;
+
+                    // Ekstrak suffix nomor HP murni (mengabaikan prefix LID panjang)
+                    let suffix = nomor08.length > 8 ? nomor08.slice(-8) : nomor08;
 
                     const { data } = await supabase
                         .from('mahasiswa')
                         .select('*')
-                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62}`)
+                        .or(`nomor_wa.eq.${nomor62},nomor_wa.eq.${nomor08},nomor_wa.eq.${nomorPlus62},nomor_wa.ilike.%${suffix}`)
                         .maybeSingle();
 
-                    dataMahasiswa = data;
+                    if (data) {
+                        dataMahasiswa = data;
+                        break; // Hentikan pencarian jika sudah ditemukan
+                    }
                 }
 
-                // Jika nomor spesifik tidak ditemukan, gunakan fallback aman "Teman" (TIDAK MENGAMBIL USER LAIN)
                 let namaUser = dataMahasiswa?.nama || 'Teman';
+                let isRegistered = !!dataMahasiswa;
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Detected Phone: ${nomorMurni || 'Unknown (LID)'} | Nama: ${namaUser} | Teks: "${teks}"`);
+                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Terdaftar: ${isRegistered} | Nama: ${namaUser} | Teks: "${teks}"`);
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
                     console.log(`[PROSES STOP] Menerima perintah STOP untuk Mahasiswa ID: ${targetDbId}`);
 
-                    if (!targetDbId) {
-                        // Jika ID tidak ditemukan via LID, update berdasarkan pencarian nomor terdaftar aktif
-                        const { data: listAktif } = await supabase
-                            .from('mahasiswa')
-                            .select('*')
-                            .eq('status_aktif', true);
-
-                        if (listAktif && listAktif.length === 1) {
-                            targetDbId = listAktif[0].id;
-                            namaUser = listAktif[0].nama;
-                        } else {
-                            await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
-                            continue;
-                        }
+                    if (!isRegistered || !targetDbId) {
+                        await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
+                        continue;
                     }
 
                     const { data, error } = await supabase
@@ -203,8 +193,6 @@ async function startBot() {
                     } else if (data && data.length > 0) {
                         console.log(`✅ [BERHASIL STOP] Status ${data[0].nama} berhasil diubah menjadi status_aktif = false`);
                         await sock.sendMessage(rawFrom, { text: `Siap ${data[0].nama || namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
-                    } else {
-                        await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
                     }
                     console.log(`✅ [AUTO-REPLY STOP] Terkirim ke ${rawFrom}`);
                     continue;
