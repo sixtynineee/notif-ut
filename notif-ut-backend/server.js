@@ -1,8 +1,8 @@
-const { 
-    default: makeWASocket, 
-    useMultiFileAuthState, 
-    DisconnectReason, 
-    fetchLatestBaileysVersion 
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
@@ -33,7 +33,7 @@ let sock;
 let isReady = false;
 
 // NOMOR HP BOT WHATSAPP
-const BOT_PHONE_NUMBER = "6283148834649"; 
+const BOT_PHONE_NUMBER = "6283148834649";
 
 // Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
@@ -75,7 +75,7 @@ async function startBot() {
 
                 let code = await sock.requestPairingCode(cleanNumber);
                 code = code?.match(/.{1,4}/g)?.join('-') || code;
-                
+               
                 console.log('\n==================================================');
                 console.log(`🔑 KODE PAIRING WHATSAPP KAMU:  ${code}`);
                 console.log('==================================================\n');
@@ -113,7 +113,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER
+    // 4. AUTO-REPLY MESSAGES HANDLER (SOLUSI PENANGANAN LID & STOP)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -160,13 +160,22 @@ async function startBot() {
                         .maybeSingle();
 
                     dataMahasiswa = data;
+                } else {
+                    // Fallback: Jika metadata LID tidak membawa nomor HP, ambil dari mahasiswa aktif pertama
+                    const { data: listMhs } = await supabase
+                        .from('mahasiswa')
+                        .select('*')
+                        .eq('status_aktif', true);
+
+                    if (listMhs && listMhs.length > 0) {
+                        dataMahasiswa = listMhs[0];
+                    }
                 }
 
-                // FIX: Gunakan nama profil WA (msg.pushName) atau "Teman" jika nomor tidak terdaftar (TIDAK MEMANGGIL NAMA ORANG LAIN)
-                let namaUser = dataMahasiswa?.nama || msg.pushName || 'Teman';
+                let namaUser = dataMahasiswa?.nama || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Terdaftar: ${!!dataMahasiswa} | Nama: ${namaUser} | Teks: "${teks}"`);
+                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Mahasiswa Terdeteksi: ${namaUser} | Teks: "${teks}"`);
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
@@ -186,7 +195,7 @@ async function startBot() {
                     if (error) {
                         console.error('❌ [DATABASE ERROR]:', error.message);
                         await sock.sendMessage(rawFrom, { text: 'Waduh, maaf ya gagal memproses penonaktifan. Coba sebentar lagi ya!' }, { quoted: msg });
-                    } else if (data && data.length > 0) {
+                    } else {
                         console.log(`✅ [BERHASIL STOP] Status ${data[0].nama} berhasil diubah menjadi status_aktif = false`);
                         await sock.sendMessage(rawFrom, { text: `Siap ${data[0].nama || namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
                     }
