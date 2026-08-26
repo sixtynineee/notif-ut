@@ -113,7 +113,7 @@ async function startBot() {
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER (SOLUSI PENANGANAN LID & STOP)
+    // 4. AUTO-REPLY MESSAGES HANDLER (FIX IDENTITY BUG)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -133,22 +133,25 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Ekstraksi JID atau Nomor HP Asli Pengirim
-                let realPhoneJid = "";
+                // 1. Ekstraksi Nomor HP Pengirim yang Akurat
+                let extractedPhone = "";
+
                 if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
-                    realPhoneJid = msg.key.remoteJidAlt;
+                    extractedPhone = msg.key.remoteJidAlt.split('@')[0];
                 } else if (msg.key.participantAlt && msg.key.participantAlt.endsWith('@s.whatsapp.net')) {
-                    realPhoneJid = msg.key.participantAlt;
+                    extractedPhone = msg.key.participantAlt.split('@')[0];
+                } else if (msg.key.participant && msg.key.participant.endsWith('@s.whatsapp.net')) {
+                    extractedPhone = msg.key.participant.split('@')[0];
                 } else if (rawFrom.endsWith('@s.whatsapp.net')) {
-                    realPhoneJid = rawFrom;
+                    extractedPhone = rawFrom.split('@')[0];
                 }
 
-                let nomorMurni = realPhoneJid ? realPhoneJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : "";
+                let nomorMurni = extractedPhone.replace(/[^0-9]/g, '');
 
-                // 2. Pencarian Data Mahasiswa di Supabase
+                // 2. Kueri Spesifik ke Supabase
                 let dataMahasiswa = null;
 
-                if (nomorMurni) {
+                if (nomorMurni && nomorMurni.length >= 10 && !nomorMurni.startsWith('2192') && !nomorMurni.startsWith('2095')) {
                     let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
                     let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
                     let nomorPlus62 = '+' + nomor62;
@@ -160,30 +163,32 @@ async function startBot() {
                         .maybeSingle();
 
                     dataMahasiswa = data;
-                } else {
-                    // Fallback: Jika metadata LID tidak membawa nomor HP, ambil dari mahasiswa aktif pertama
-                    const { data: listMhs } = await supabase
-                        .from('mahasiswa')
-                        .select('*')
-                        .eq('status_aktif', true);
-
-                    if (listMhs && listMhs.length > 0) {
-                        dataMahasiswa = listMhs[0];
-                    }
                 }
 
+                // Jika nomor spesifik tidak ditemukan, gunakan fallback aman "Teman" (TIDAK MENGAMBIL USER LAIN)
                 let namaUser = dataMahasiswa?.nama || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
-                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Mahasiswa Terdeteksi: ${namaUser} | Teks: "${teks}"`);
+                console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Detected Phone: ${nomorMurni || 'Unknown (LID)'} | Nama: ${namaUser} | Teks: "${teks}"`);
 
                 // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
                     console.log(`[PROSES STOP] Menerima perintah STOP untuk Mahasiswa ID: ${targetDbId}`);
 
                     if (!targetDbId) {
-                        await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
-                        continue;
+                        // Jika ID tidak ditemukan via LID, update berdasarkan pencarian nomor terdaftar aktif
+                        const { data: listAktif } = await supabase
+                            .from('mahasiswa')
+                            .select('*')
+                            .eq('status_aktif', true);
+
+                        if (listAktif && listAktif.length === 1) {
+                            targetDbId = listAktif[0].id;
+                            namaUser = listAktif[0].nama;
+                        } else {
+                            await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
+                            continue;
+                        }
                     }
 
                     const { data, error } = await supabase
@@ -195,9 +200,11 @@ async function startBot() {
                     if (error) {
                         console.error('❌ [DATABASE ERROR]:', error.message);
                         await sock.sendMessage(rawFrom, { text: 'Waduh, maaf ya gagal memproses penonaktifan. Coba sebentar lagi ya!' }, { quoted: msg });
-                    } else {
+                    } else if (data && data.length > 0) {
                         console.log(`✅ [BERHASIL STOP] Status ${data[0].nama} berhasil diubah menjadi status_aktif = false`);
                         await sock.sendMessage(rawFrom, { text: `Siap ${data[0].nama || namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
+                    } else {
+                        await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
                     }
                     console.log(`✅ [AUTO-REPLY STOP] Terkirim ke ${rawFrom}`);
                     continue;
