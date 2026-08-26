@@ -8,6 +8,7 @@ const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const http = require('http');
 const pino = require('pino');
+const qrcode = require('qrcode-terminal');
 
 // ==========================================
 // 1. SERVER HEALTH-CHECK (MENCEGAH RENDER SLEEP 24/7)
@@ -32,9 +33,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
-// NOMOR HP BOT WHATSAPP
-const BOT_PHONE_NUMBER = "6283148834649"; 
-
 // Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt') || err.message.includes('prekey'))) {
@@ -44,19 +42,17 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (FIX PAIRING CODE BROWSER)
+// 3. INISIALISASI BOT WHATSAPP (METODE SCAN QR CODE)
 // ==========================================
 async function startBot() {
-    // Membawa auth state baileys_session_v3 milikmu
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
+    // Menggunakan folder 'baileys_session_v5' untuk menghapus kunci lama yang gagal
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v5');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        // SOLUSI UTAMA PAIRING CODE: Menggunakan macOS/Chrome agar WhatsApp HP mau menerima kodenya
         browser: ['Mac OS', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -67,31 +63,18 @@ async function startBot() {
         }
     });
 
-    if (!sock.authState.creds.registered) {
-        setTimeout(async () => {
-            try {
-                let cleanNumber = BOT_PHONE_NUMBER.replace(/[^0-9]/g, '');
-                if (cleanNumber.startsWith('0')) {
-                    cleanNumber = '62' + cleanNumber.slice(1);
-                }
-
-                let code = await sock.requestPairingCode(cleanNumber);
-                code = code?.match(/.{1,4}/g)?.join('-') || code;
-                
-                console.log('\n==================================================');
-                console.log(`🔑 KODE PAIRING WHATSAPP KAMU:  ${code}`);
-                console.log('==================================================');
-                console.log(`📲 MASUKKAN KODE DI ATAS KE HP: ${cleanNumber}\n`);
-            } catch (err) {
-                console.error('❌ Gagal meminta Pairing Code:', err.message || err);
-            }
-        }, 6000);
-    }
-
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        // Tampilkan QR Code di terminal log jika belum terhubung
+        if (qr) {
+            console.log('\n==================================================');
+            console.log('📷 SILAKAN SCAN QR CODE DI BAWAH INI DENGAN HP KAMU:');
+            console.log('==================================================\n');
+            qrcode.generate(qr, { small: true });
+        }
 
         if (connection === 'close') {
             isReady = false;
@@ -165,7 +148,6 @@ async function startBot() {
                     dataMahasiswa = data;
                 }
 
-                // Menggunakan pushName WA atau "Teman" jika nomor tidak ada di DB (Aman dari bug Mas Agus)
                 let namaUser = dataMahasiswa?.nama || msg.pushName || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
