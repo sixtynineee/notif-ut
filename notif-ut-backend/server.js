@@ -4,13 +4,14 @@ const {
     DisconnectReason, 
     fetchLatestBaileysVersion 
 } = require('@whiskeysockets/baileys');
+const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const http = require('http');
 const pino = require('pino');
 
 // ==========================================
-// 1. SERVER HEALTH-CHECK (DUMMY HTTP FOR RENDER)
+// 1. SERVER HEALTH-CHECK (MENCEGAH RENDER SLEEP 24/7)
 // ==========================================
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
@@ -32,9 +33,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
-// ⚠️ MASUKKAN NOMOR HP BOT DI SINI (CONTOH: "6289523136633")
-const BOT_PHONE_NUMBER = "6289523136633"; 
+// ⚠️ MASUKKAN NOMOR HP BOT DI SINI (Gunakan format 62 di depan)
+const BOT_PHONE_NUMBER = "6289523136633";
 
+// Abaikan uncaught error enkripsi internal agar bot tidak crash
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt'))) {
         return;
@@ -43,10 +45,11 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (PAIRING CODE STABIL)
+// 3. INISIALISASI BOT WHATSAPP (BERSIH SESI BARU)
 // ==========================================
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_auth');
+    // Menggunakan folder 'baileys_session_v2' untuk memastikan sesi lama yang bermasalah terisolasi
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v2');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -54,8 +57,7 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        // Format Browser Resmi untuk Penautan Perangkat
-        browser: ['Mac OS', 'Chrome', '121.0.6167.160'],
+        browser: ['Mac OS', 'Chrome', '121.0.6167.160'], // Format browser stabil
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -65,7 +67,7 @@ async function startBot() {
         }
     });
 
-    // MINTA PAIRING CODE JIKA BELUM TERREGISTER
+    // MINTA PAIRING CODE & CETAK QR CODE JIKA BELUM TERDAFTAR
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
@@ -78,18 +80,24 @@ async function startBot() {
                 code = code?.match(/.{1,4}/g)?.join('-') || code;
                 
                 console.log('\n==================================================');
-                console.log(`🔑 KODE PAIRING BARU (MASUKKAN DENGAN CEPAT):  ${code}`);
+                console.log(`🔑 KODE PAIRING WHATSAPP (MASUKKAN DALAM 60 DETIK):  ${code}`);
                 console.log('==================================================\n');
             } catch (err) {
-                console.error('❌ Gagal meminta Pairing Code, mencoba ulang...', err.message || err);
+                console.error('⚠️ Gagal meminta Pairing Code, silakan gunakan Scan QR Code di bawah.');
             }
-        }, 5000); // Penyeimbang 5 detik agar koneksi awal siap
+        }, 4000);
     }
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        // Tampilkan QR Code di Terminal / Render Logs sebagai opsi cadangan
+        if (qr) {
+            console.log('\n=== ATAU SCAN QR CODE DI BAWAH INI DENGAN WHATSAPP HP KAMU ===\n');
+            qrcode.generate(qr, { small: true });
+        }
 
         if (connection === 'close') {
             isReady = false;
@@ -103,7 +111,7 @@ async function startBot() {
                 console.log('🔄 Reconnecting otomatis...');
                 setTimeout(() => startBot(), 3000);
             } else {
-                console.log('❌ Anda telah Log Out. Silakan hapus folder baileys_auth dan restart.');
+                console.log('❌ Anda telah Log Out. Silakan bersihkan folder sesi dan restart.');
             }
         } else if (connection === 'open') {
             console.log('⏳ Sinkronisasi sesi WhatsApp...');
@@ -124,7 +132,7 @@ async function startBot() {
                 if (!msg.message || msg.key.fromMe) continue;
 
                 const rawFrom = msg.key.remoteJid;
-                if (!rawFrom || rawFrom.endsWith('@g.us')) continue;
+                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan grup
 
                 const teks = (
                     msg.message.conversation ||
@@ -134,6 +142,7 @@ async function startBot() {
 
                 if (!teks) continue;
 
+                // Ekstraksi Angka Murni Nomor HP Pengirim
                 let phoneDigits = "";
                 if (msg.key.participant) {
                     phoneDigits = msg.key.participant.split('@')[0].split(':')[0];
@@ -163,7 +172,10 @@ async function startBot() {
                     }
                 }
 
+                // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
+                    console.log(`[PROSES STOP] Menerima perintah STOP dari ${nomor62}`);
+
                     const { data, error } = await supabase
                         .from('mahasiswa')
                         .update({ status_aktif: false })
@@ -171,15 +183,17 @@ async function startBot() {
                         .select();
 
                     if (error) {
+                        console.error('❌ [DATABASE ERROR]:', error.message);
                         await sock.sendMessage(rawFrom, { text: '❌ Gagal memproses penonaktifan.' }, { quoted: msg });
                     } else if (!data || data.length === 0) {
                         await sock.sendMessage(rawFrom, { text: '🛑 Nomor Anda tidak terdaftar.' }, { quoted: msg });
                     } else {
-                        await sock.sendMessage(rawFrom, { text: '🛑 *Layanan Notifikasi Diberhentikan.*' }, { quoted: msg });
+                        await sock.sendMessage(rawFrom, { text: '🛑 *Layanan Notifikasi Diberhentikan.*\n\nAnda tidak akan menerima pengingat jadwal Tuton UT lagi.' }, { quoted: msg });
                     }
                     continue;
                 }
 
+                // B. FITUR CEK JADWAL
                 if (teks === 'JADWAL' || teks === 'INFO' || teks === 'CEK JADWAL') {
                     const { data: daftarJadwal, error } = await supabase
                         .from('jadwal_tuton')
@@ -188,7 +202,7 @@ async function startBot() {
                         .order('id', { ascending: true });
 
                     if (error || !daftarJadwal || daftarJadwal.length === 0) {
-                        await sock.sendMessage(rawFrom, { text: `Halo *${namaUser}*,\n\nJadwal belum tersedia.` }, { quoted: msg });
+                        await sock.sendMessage(rawFrom, { text: `Halo *${namaUser}*,\n\nSaat ini daftar jadwal Tuton 1 semester belum tersedia.` }, { quoted: msg });
                         continue;
                     }
 
@@ -200,11 +214,17 @@ async function startBot() {
                     balasanJadwal += `-----------------------------------\n_Ketik *STOP* untuk berhenti._`;
 
                     await sock.sendMessage(rawFrom, { text: balasanJadwal }, { quoted: msg });
+                    console.log(`✅ [AUTO-REPLY JADWAL] Berhasil terkirim ke ${rawFrom}`);
                     continue;
                 }
 
-                const pesanBantuan = `🤖 *[BOT NOTIF-UT]*\n\nHalo *${namaUser}*! Kata kunci:\n👉 *JADWAL* : Cek kalender.\n👉 *STOP* : Berhenti.`;
+                // C. BANTUAN / FALLBACK UNTUK PESAN SEMBARANGAN
+                const pesanBantuan = `🤖 *[BOT NOTIF-UT]*\n\nHalo *${namaUser}*! Saya adalah bot pengingat otomatis Tuton UT. Kata kunci yang dapat kamu gunakan:\n\n` +
+                    `👉 *JADWAL* : Cek kalender jadwal Tuton 1 semester (Sesi 1-8).\n` +
+                    `👉 *STOP* : Berhenti menerima notifikasi pengingat.`;
+
                 await sock.sendMessage(rawFrom, { text: pesanBantuan }, { quoted: msg });
+                console.log(`✅ [AUTO-REPLY FALLBACK] Berhasil terkirim ke ${rawFrom}`);
             }
         } catch (err) {
             console.error('❌ Error Handling Message:', err);
@@ -213,19 +233,30 @@ async function startBot() {
 }
 
 // ==========================================
-// 5. LOGIKA PENGIRIMAN PESAN MASSAL
+// 5. LOGIKA PENGIRIMAN PESAN MASSAL (BLAST NOTIFIKASI SCHEDULER)
 // ==========================================
 async function kirimNotifikasiMassal(jadwal) {
-    if (!sock || !isReady) return;
+    if (!sock || !isReady) {
+        console.log('⚠️ Sesi WhatsApp belum siap, menunda pengiriman notifikasi...');
+        return;
+    }
 
+    // Mengunci status jadwal di Supabase agar tidak dikirim ulang oleh Cronjob
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
 
-    const { data: daftarMahasiswa } = await supabase
+    console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
+
+    const { data: daftarMahasiswa, error } = await supabase
         .from('mahasiswa')
         .select('*')
         .eq('status_aktif', true);
 
-    if (!daftarMahasiswa || daftarMahasiswa.length === 0) return;
+    if (error || !daftarMahasiswa || daftarMahasiswa.length === 0) {
+        console.log('⚠️ Tidak ada mahasiswa AKTIF untuk dikirimkan notifikasi.');
+        return;
+    }
+
+    console.log(`📌 Memproses pengiriman ke ${daftarMahasiswa.length} mahasiswa aktif.`);
 
     for (const mhs of daftarMahasiswa) {
         if (mhs.status_aktif !== true) continue;
@@ -243,10 +274,12 @@ async function kirimNotifikasiMassal(jadwal) {
         else if (jadwal.tipe_pengingat === "H-1 DEADLINE") headerNotif = "⏰ [NOTIF-UT] Peringatan BESOK DEADLINE!";
         else if (jadwal.tipe_pengingat === "HARI-H DEADLINE") headerNotif = "🚨🔥 [NOTIF-UT] LAST CHANCE - DEADLINE HARI INI!";
 
-        const pesan = `${headerNotif}\n\nHalo *${mhs.nama}* (${mhs.jurusan}),\nBerikut pengingat batas waktu untuk *${jadwal.nama_sesi}*:\n\n📘 Deadline Sesi : _${jadwal.deadline_non_praktik}_\n\n⚠️ _Segera selesaikan dan unggah tugas/diskusi kamu di elearning.ut.ac.id sebelum pukul 23.59 WIB!_\n-----------------------------------\n_Ketik *JADWAL* untuk cek kalender | Ketik *STOP* untuk berhenti._`;
+        const pesan = `${headerNotif}\n\nHalo *${mhs.nama}* (${mhs.jurusan}),\nBerikut pengingat batas waktu untuk *${jadwal.nama_sesi}*:\n\n📘 Deadline Sesi : _${jadwal.deadline_non_praktik}_\n\n⚠️ _Segera selesaikan dan unggah tugas/diskusi kamu di elearning.ut.ac.id sebelum pukul 23.59 WIB!_\n-----------------------------------\n_Ketik *JADWAL* untuk cek kalender lengkap | Ketik *STOP* untuk berhenti._`;
 
         try {
             await sock.sendMessage(targetJid, { text: pesan });
+            console.log(`✅ Pesan notifikasi scheduler terkirim ke: ${mhs.nama} (${targetJid})`);
+
             await supabase.from('log_pengiriman').insert([{
                 mahasiswa_id: mhs.id,
                 jadwal_id: jadwal.id,
@@ -257,7 +290,7 @@ async function kirimNotifikasiMassal(jadwal) {
             console.error(`❌ Gagal mengirim ke ${nomorBersih}:`, err.message || err);
         }
 
-        await sleep(2000);
+        await sleep(2000); // Delay 2 detik
     }
 }
 
@@ -282,4 +315,5 @@ cron.schedule('* * * * *', async () => {
     }
 });
 
+// Start Bot Engine
 startBot();
