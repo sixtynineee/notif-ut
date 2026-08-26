@@ -8,6 +8,7 @@ const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const http = require('http');
 const pino = require('pino');
+const qrcode = require('qrcode-terminal'); // Modul QR Code Terminal
 
 // ==========================================
 // 1. SERVER HEALTH-CHECK (MENCEGAH RENDER SLEEP 24/7)
@@ -80,7 +81,7 @@ function resolvePhoneNumber(msg) {
 }
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (SCAN QR MODE)
+// 3. INISIALISASI BOT WHATSAPP
 // ==========================================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
@@ -89,7 +90,6 @@ async function startBot() {
     sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: true, // METODE SCAN QR CODE DI AKTIFKAN
         logger: pino({ level: 'silent' }),
         browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
@@ -103,7 +103,7 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Event listener penangkapan update kontak untuk pemetaan LID -> Nomor HP
+    // Event listener pemetaan LID -> Nomor HP
     sock.ev.on('contacts.upsert', (contacts) => {
         for (const contact of contacts) {
             if (contact.id && contact.lid) {
@@ -113,12 +113,16 @@ async function startBot() {
         }
     });
 
+    // Menangani pencetakan QR Code secara manual
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
             console.log('\n==================================================');
-            console.log(' SILAKAN SCAN QR CODE DI ATAS MENGGUNAKAN WHATSAPP');
+            console.log(' SCAN QR CODE DI BAWAH VIA WHATSAPP:');
+            console.log('==================================================');
+            // Cetak QR Code dalam versi kecil (small) agar pas di layar log Render
+            qrcode.generate(qr, { small: true });
             console.log('==================================================\n');
         }
 
@@ -155,7 +159,7 @@ async function startBot() {
                 if (!msg.message || msg.key.fromMe) continue;
 
                 const rawFrom = msg.key.remoteJid;
-                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan pesan dari grup
+                if (!rawFrom || rawFrom.endsWith('@g.us')) continue; // Abaikan grup
 
                 const teks = (
                     msg.message.conversation ||
