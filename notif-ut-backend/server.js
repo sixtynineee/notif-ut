@@ -33,7 +33,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
-// Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt') || err.message.includes('prekey'))) {
         return;
@@ -42,11 +41,10 @@ process.on('uncaughtException', (err) => {
 });
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (METODE SCAN QR CODE)
+// 3. INISIALISASI BOT WHATSAPP
 // ==========================================
 async function startBot() {
-    // Menggunakan folder 'baileys_session_v5' untuk menghapus kunci lama yang gagal
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v5');
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -68,10 +66,9 @@ async function startBot() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // Tampilkan QR Code di terminal log jika belum terhubung
         if (qr) {
             console.log('\n==================================================');
-            console.log('📷 SILAKAN SCAN QR CODE DI BAWAH INI DENGAN HP KAMU:');
+            console.log('📷 SCAN QR CODE DI BAWAH INI DENGAN HP KAMU:');
             console.log('==================================================\n');
             qrcode.generate(qr, { small: true });
         }
@@ -119,7 +116,6 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Ekstraksi JID atau Nomor HP Asli Pengirim
                 let realPhoneJid = "";
                 if (msg.key.remoteJidAlt && msg.key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
                     realPhoneJid = msg.key.remoteJidAlt;
@@ -131,9 +127,7 @@ async function startBot() {
 
                 let nomorMurni = realPhoneJid ? realPhoneJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : "";
 
-                // 2. Pencarian Data Mahasiswa di Supabase
                 let dataMahasiswa = null;
-
                 if (nomorMurni) {
                     let nomor62 = nomorMurni.startsWith('0') ? '62' + nomorMurni.slice(1) : nomorMurni;
                     let nomor08 = nomorMurni.startsWith('62') ? '0' + nomorMurni.slice(2) : nomorMurni;
@@ -153,7 +147,6 @@ async function startBot() {
 
                 console.log(`📩 [PESAN MASUK] Raw: ${rawFrom} | Terdaftar: ${!!dataMahasiswa} | Nama: ${namaUser} | Teks: "${teks}"`);
 
-                // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
                     if (!targetDbId) {
                         await sock.sendMessage(rawFrom, { text: 'Nomor kamu sepertinya belum terdaftar di sistem pengingat nih.' }, { quoted: msg });
@@ -173,11 +166,9 @@ async function startBot() {
                         console.log(`✅ [BERHASIL STOP] Status ${data[0].nama} berhasil diubah menjadi status_aktif = false`);
                         await sock.sendMessage(rawFrom, { text: `Siap ${data[0].nama || namaUser}, pengingat Tuton kamu sudah dinonaktifkan yaa. Kalau nanti mau diaktifkan lagi, tinggal daftar ulang aja lewat website. Semangat kuliahnya!` }, { quoted: msg });
                     }
-                    console.log(`✅ [AUTO-REPLY STOP] Terkirim ke ${rawFrom}`);
                     continue;
                 }
 
-                // B. FITUR CEK JADWAL
                 if (teks === 'JADWAL' || teks === 'INFO' || teks === 'CEK JADWAL') {
                     const { data: daftarJadwal, error } = await supabase
                         .from('jadwal_tuton')
@@ -198,17 +189,14 @@ async function startBot() {
                     balasanJadwal += `_Kalau kamu merasa terganggu dan mau berhenti dapat pengingat, tinggal balas *STOP* aja ya._`;
 
                     await sock.sendMessage(rawFrom, { text: balasanJadwal }, { quoted: msg });
-                    console.log(`✅ [AUTO-REPLY JADWAL] Terkirim ke ${rawFrom}`);
                     continue;
                 }
 
-                // C. BANTUAN / FALLBACK UNTUK PESAN SEMBARANGAN
                 const pesanBantuan = `Halo ${namaUser}! 👋\n\nAku pesan otomatis pengingat Tuton UT. Biar gampang, ini beberapa perintah yang bisa kamu ketik:\n\n` +
                     `• Ketik *JADWAL* : Untuk lihat kalender & deadline Tuton.\n` +
                     `• Ketik *STOP* : Kalau mau berhenti dapat pengingat harian.`;
 
                 await sock.sendMessage(rawFrom, { text: pesanBantuan }, { quoted: msg });
-                console.log(`✅ [AUTO-REPLY FALLBACK] Terkirim ke ${rawFrom}`);
 
             } catch (errInner) {
                 console.error('❌ Error isolasi pesan:', errInner.message || errInner);
