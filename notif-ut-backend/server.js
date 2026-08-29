@@ -11,7 +11,7 @@ const http = require('http');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
-const qrcode = require('qrcode-terminal'); // Modul QR Code Terminal
+const qrcode = require('qrcode-terminal');
 
 // ==========================================
 // 1. SERVER HEALTH-CHECK (RENDER KEEP-ALIVE)
@@ -19,7 +19,7 @@ const qrcode = require('qrcode-terminal'); // Modul QR Code Terminal
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot UT WhatsApp (QR Engine Hybrid) Active!\n');
+    res.end('Bot UT WhatsApp (Baileys Engine) Active!\n');
 }).listen(PORT, () => {
     console.log(` Health-Check Server berjalan di port ${PORT}`);
 });
@@ -128,7 +128,7 @@ function resolvePhoneNumber(msg) {
     return null; 
 }
 
-// Fungsi Pencarian Mahasiswa
+// Fungsi Pencarian Mahasiswa (LID + Nomor Phone Suffix)
 async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
     if (rawFrom.endsWith('@lid')) {
         const { data: lidMatch } = await supabase
@@ -171,7 +171,7 @@ async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
 }
 
 // ==========================================
-// 4. INISIALISASI BOT WHATSAPP (QR CODE MODE)
+// 4. INISIALISASI BOT WHATSAPP
 // ==========================================
 async function startBot() {
     await restoreSessionFromSupabase();
@@ -211,7 +211,6 @@ async function startBot() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // TAMPILKAN QR CODE DI LOGS RENDER
         if (qr) {
             console.log('\n==================================================');
             console.log(' SCAN QR CODE DI BAWAH INI DENGAN WHATSAPP HP KAMU:');
@@ -243,13 +242,13 @@ async function startBot() {
             console.log(' Menyinkronkan sesi WhatsApp...');
             await sleep(3000);
             isReady = true;
-            console.log('\n WhatsApp Client (QR Engine Hybrid) Berhasil Terhubung & Siap 100%!\n');
+            console.log('\n WhatsApp Client (Hybrid Storage) Berhasil Terhubung & Siap 100%!\n');
             await backupSessionToSupabase();
         }
     });
 
     // ==========================================
-    // 5. AUTO-REPLY MESSAGES HANDLER
+    // 5. AUTO-REPLY MESSAGES HANDLER (ASLI)
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -277,58 +276,95 @@ async function startBot() {
                         .from('mahasiswa')
                         .update({ lid: rawFrom })
                         .eq('id', dataMahasiswa.id);
+                    console.log(` [AUTO-LINK LID] Berhasil menautkan LID ${rawFrom} ke Mahasiswa: ${dataMahasiswa.nama}`);
                 }
 
                 let namaUser = dataMahasiswa?.nama || 'Teman';
                 let targetDbId = dataMahasiswa?.id || null;
 
+                console.log(` [PESAN MASUK] Raw: ${rawFrom} | No Parsed: ${nomor62 || 'LID Only'} | Mhs: ${namaUser} | Teks: "${teks}"`);
+
+                // A. FITUR UNSUBSCRIBE (STOP)
                 if (teks === 'STOP') {
                     if (!targetDbId) {
-                        await sock.sendMessage(rawFrom, { text: 'Nomor WhatsApp kamu belum terdaftar di sistem pengingat kami. Daftar via: https://notif-ut.vercel.app/' }, { quoted: msg });
+                        await sock.sendMessage(rawFrom, { 
+                            text: 'Nomor WhatsApp kamu belum terdaftar di sistem pengingat kami. Kamu bisa mendaftar terlebih dahulu via website:\nhttps://notif-ut.vercel.app/' 
+                        }, { quoted: msg });
                         continue;
                     }
 
-                    const { data } = await supabase.from('mahasiswa').update({ status_aktif: false }).eq('id', targetDbId).select();
-                    const mhsUpdated = data && data[0] ? data[0] : dataMahasiswa;
-                    await sock.sendMessage(rawFrom, { text: `Siap ${mhsUpdated.nama}, pengingat Tuton kamu telah dinonaktifkan.` }, { quoted: msg });
+                    const { data, error } = await supabase
+                        .from('mahasiswa')
+                        .update({ status_aktif: false })
+                        .eq('id', targetDbId)
+                        .select();
+
+                    if (error) {
+                        console.error(' [DATABASE ERROR STOP]:', error.message);
+                        await sock.sendMessage(rawFrom, { text: 'Maaf, gagal memproses penonaktifan pengingat. Silakan coba lagi beberapa saat lagi.' }, { quoted: msg });
+                    } else {
+                        const mhsUpdated = data && data[0] ? data[0] : dataMahasiswa;
+                        console.log(` [BERHASIL STOP] Status ${mhsUpdated.nama} diubah menjadi status_aktif = false`);
+                        await sock.sendMessage(rawFrom, { 
+                            text: `Siap ${mhsUpdated.nama}, pengingat Tuton kamu telah dinonaktifkan.\n\nJika nanti ingin mengaktifkan kembali, kamu bisa daftar ulang kapan saja via website kami di:\nhttps://notif-ut.vercel.app/\n\nSemangat kuliahnya!` 
+                        }, { quoted: msg });
+                    }
                     continue;
                 }
 
+                // B. FITUR CEK JADWAL
                 if (teks === 'JADWAL' || teks === 'INFO' || teks === 'CEK JADWAL') {
-                    const { data: daftarJadwal } = await supabase.from('jadwal_tuton').select('*').eq('tipe_pengingat', 'SESI_BUKA').order('id', { ascending: true });
-                    if (!daftarJadwal || daftarJadwal.length === 0) {
-                        await sock.sendMessage(rawFrom, { text: `Halo ${namaUser}! Jadwal Tuton belum tersedia.` }, { quoted: msg });
+                    const { data: daftarJadwal, error } = await supabase
+                        .from('jadwal_tuton')
+                        .select('*')
+                        .eq('tipe_pengingat', 'SESI_BUKA')
+                        .order('id', { ascending: true });
+
+                    if (error || !daftarJadwal || daftarJadwal.length === 0) {
+                        await sock.sendMessage(rawFrom, { text: `Halo ${namaUser}! Jadwal Tuton untuk semester ini belum tersedia di sistem.` }, { quoted: msg });
                         continue;
                     }
 
-                    let balasanJadwal = `Halo ${namaUser}!\n\nBerikut rincian jadwal Tuton:\n\n`;
+                    let balasanJadwal = `Halo ${namaUser}!\n\nBerikut rincian jadwal Tuton semester ini:\n\n`;
                     daftarJadwal.forEach((j) => {
                         const tglBuka = new Date(j.waktu_kirim).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
                         balasanJadwal += ` *${j.nama_sesi}*\n• Buka: ${tglBuka}\n• Batas Akhir: ${j.deadline_non_praktik}\n\n`;
                     });
+                    balasanJadwal += `_Ketik *STOP* untuk berhenti menerima pengingat otomatis._\nWebsite: https://notif-ut.vercel.app/`;
+
                     await sock.sendMessage(rawFrom, { text: balasanJadwal }, { quoted: msg });
                     continue;
                 }
 
-                const pesanBantuan = `Halo ${namaUser}!\n\nPerintah bot pengingat Tuton UT:\n• Ketik *JADWAL* : Info jadwal\n• Ketik *STOP* : Berhenti berlangganan`;
+                // C. BANTUAN / FALLBACK UNTUK PESAN LAINNYA
+                const pesanBantuan = `Halo ${namaUser}!\n\nIni adalah bot pengingat otomatis Tuton UT. Berikut kata kunci perintah yang bisa kamu gunakan:\n\n` +
+                    `• Ketik *JADWAL* : Untuk melihat kalender & deadline Tuton.\n` +
+                    `• Ketik *STOP* : Untuk berhenti menerima pengingat harian.\n\n` +
+                    `Kunjungi portal resmi kami di:\nhttps://notif-ut.vercel.app/`;
+
                 await sock.sendMessage(rawFrom, { text: pesanBantuan }, { quoted: msg });
 
             } catch (errInner) {
-                console.error(' Error pesan:', errInner.message);
+                console.error(' Error penanganan pesan:', errInner.message || errInner);
             }
         }
     });
 }
 
 // ==========================================
-// 6. SCHEDULER NOTIFIKASI
+// 6. LOGIKA PENGIRIMAN NOTIFIKASI SCHEDULER (ASLI & LENGKAP)
 // ==========================================
 async function kirimNotifikasiMassal(jadwal) {
     if (!sock || !isReady) return;
 
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
+    console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi} (${jadwal.tipe_pengingat})`);
 
-    const { data: daftarMahasiswa } = await supabase.from('mahasiswa').select('*').eq('status_aktif', true);
+    const { data: daftarMahasiswa } = await supabase
+        .from('mahasiswa')
+        .select('*')
+        .eq('status_aktif', true);
+
     if (!daftarMahasiswa || daftarMahasiswa.length === 0) return;
 
     for (const mhs of daftarMahasiswa) {
@@ -339,23 +375,60 @@ async function kirimNotifikasiMassal(jadwal) {
         const isTugas = jadwal.nama_sesi.includes("Tugas");
         const jenisKegiatan = isTugas ? "Tugas" : "Diskusi";
 
-        let pesan = `Halo ${mhs.nama}!\n\nPengingat *${jadwal.nama_sesi}* (${jadwal.tipe_pengingat}).\nBatas akhir: _${jadwal.deadline_non_praktik}_\n\nYuk segera kerjakan ${jenisKegiatan} kamu di elearning.ut.ac.id!`;
+        let pesan = "";
+        if (jadwal.tipe_pengingat === "SESI_BUKA") {
+            pesan = `Halo ${mhs.nama}!\n\nSekadar mengingatkan, *${jadwal.nama_sesi}* sudah resmi dibuka ya.\n\n📘 Batas Akhir: _${jadwal.deadline_non_praktik}_\n\nYuk segera login di elearning.ut.ac.id dan mulai mencicil ${jenisKegiatan} kamu! Semangat!`;
+        } else if (jadwal.tipe_pengingat === "H-10 DEADLINE") {
+            pesan = `Halo ${mhs.nama}!\n\nPengingat santai: Waktu pengerjaan *${jadwal.nama_sesi}* sisa *10 hari lagi* (_${jadwal.deadline_non_praktik}_).\n\nMumpung masih panjang, yuk dicicil dari sekarang di elearning.ut.ac.id!`;
+        } else if (jadwal.tipe_pengingat === "H-7 DEADLINE") {
+            pesan = `Halo ${mhs.nama}!\n\nPengingat minggu kedua: Batas akhir untuk *${jadwal.nama_sesi}* tinggal *7 hari lagi* (_${jadwal.deadline_non_praktik}_).\n\nJangan lupa luangkan waktu minggu ini untuk menyelesaikan ${jenisKegiatan} kamu di elearning.ut.ac.id ya!`;
+        } else if (jadwal.tipe_pengingat === "H-5 DEADLINE") {
+            pesan = `Halo ${mhs.nama}!\n\nPengingat pertengahan: Deadline *${jadwal.nama_sesi}* tinggal *5 hari lagi* nih (_${jadwal.deadline_non_praktik}_).\n\nYuk segara selesaikan pengerjaannya di elearning.ut.ac.id!`;
+        } else if (jadwal.tipe_pengingat === "H-3 DEADLINE") {
+            pesan = `Halo ${mhs.nama}!\n\nPengingat cepat: Batas waktu untuk *${jadwal.nama_sesi}* tinggal *3 hari lagi* nih (_${jadwal.deadline_non_praktik}_).\n\nJangan sampai terlewat ya, yuk segera tuntaskan ${jenisKegiatan} di elearning.ut.ac.id!`;
+        } else if (jadwal.tipe_pengingat === "H-1 DEADLINE") {
+            pesan = `Halo ${mhs.nama}!\n\nPengingat H-1: Besok adalah batas akhir pengunggahan untuk *${jadwal.nama_sesi}* (_${jadwal.deadline_non_praktik}_).\n\nPastikan lembar ${jenisKegiatan} kamu sudah ter-upload dengan benar di elearning.ut.ac.id ya. Semangat!`;
+        } else if (jadwal.tipe_pengingat === "HARI-H DEADLINE") {
+            pesan = `🚨 *LAST CHANCE - DEADLINE HARI INI!*\n\nHalo ${mhs.nama}!\n\nHari ini adalah *BATAS AKHIR TERAKHIR* untuk *${jadwal.nama_sesi}*!\n\n⏰ Batas Pengunggahan: _Pukul 23.59 WIB malam ini_.\n\nJika belum selesai, yuk segera unggah ${jenisKegiatan} kamu di elearning.ut.ac.id sekarang juga!`;
+        } else {
+            pesan = `Halo ${mhs.nama},\n\nPengingat untuk *${jadwal.nama_sesi}* dengan batas waktu _${jadwal.deadline_non_praktik}_.\n\nCek elearning.ut.ac.id ya!`;
+        }
+
+        pesan += `\n\n-----------------------------------\n_Ketik *JADWAL* untuk info jadwal | Ketik *STOP* untuk berhenti berlangganan._\nPortal Resmi: https://notif-ut.vercel.app/`;
 
         try {
             await sock.sendMessage(targetJid, { text: pesan });
-            await supabase.from('log_pengiriman').insert([{ mahasiswa_id: mhs.id, jadwal_id: jadwal.id, nomor_wa: nomorBersih, status_kirim: 'SUCCESS' }]);
+            console.log(` Pesan terkirim ke: ${mhs.nama} (${targetJid})`);
+            
+            await supabase.from('log_pengiriman').insert([{
+                mahasiswa_id: mhs.id,
+                jadwal_id: jadwal.id,
+                nomor_wa: nomorBersih,
+                status_kirim: 'SUCCESS'
+            }]);
         } catch (err) {
-            console.error(` Gagal kirim ke ${mhs.nama}:`, err.message);
+            console.error(` Gagal mengirim ke ${mhs.nama} (${nomorBersih}):`, err.message || err);
         }
+
         await sleep(2000);
     }
 }
 
+// ==========================================
+// 7. CRONJOB SCHEDULER
+// ==========================================
 cron.schedule('* * * * *', async () => {
     if (!isReady) return;
+
     const sekarang = new Date().toISOString();
-    const { data: jadwalPending } = await supabase.from('jadwal_tuton').select('*').lte('waktu_kirim', sekarang).eq('status_terkirim', false);
-    if (daftarJadwal = jadwalPending) {
+
+    const { data: jadwalPending } = await supabase
+        .from('jadwal_tuton')
+        .select('*')
+        .lte('waktu_kirim', sekarang)
+        .eq('status_terkirim', false);
+
+    if (jadwalPending && jadwalPending.length > 0) {
         for (const jadwal of jadwalPending) {
             await kirimNotifikasiMassal(jadwal);
         }
