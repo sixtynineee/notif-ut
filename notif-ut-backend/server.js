@@ -1,14 +1,16 @@
 const {
     default: makeWASocket,
+    useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
-    initAuthCreds,
-    BufferJSON
+    Browsers
 } = require('@whiskeysockets/baileys');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const http = require('http');
 const pino = require('pino');
+const fs = require('fs');
+const path = require('path');
 
 // ==========================================
 // 1. SERVER HEALTH-CHECK (RENDER KEEP-ALIVE)
@@ -16,7 +18,7 @@ const pino = require('pino');
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot UT WhatsApp (Baileys Engine + Supabase Auth) Active!\n');
+    res.end('Bot UT WhatsApp (Baileys Engine Hybrid) Active!\n');
 }).listen(PORT, () => {
     console.log(` Health-Check Server berjalan di port ${PORT}`);
 });
@@ -31,6 +33,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // NOMOR HP BOT WHATSAPP KAMU (FORMAT: 628xxx)
 const BOT_PHONE_NUMBER = "6283148834649";
 
+const SESSION_DIR = path.join(__dirname, 'baileys_session_v3');
 const lidToPhoneMap = new Map();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -61,84 +64,48 @@ function formatTo62(str) {
 }
 
 // ==========================================
-// 3. ADAPTER SESI BAILEYS KE SUPABASE DATABASE
+// 3. FUNGSI SINKRONISASI SESI DISK <=> SUPABASE
 // ==========================================
-async function useSupabaseAuthState() {
-    const readData = async (type, id) => {
-        try {
-            const { data } = await supabase
-                .from('wa_sessions')
-                .select('data')
-                .eq('id', `${type}-${id}`)
-                .maybeSingle();
-
-            if (data && data.data) {
-                return JSON.parse(JSON.stringify(data.data), BufferJSON.reviver);
+async function restoreSessionFromSupabase() {
+    try {
+        if (!fs.existsSync(SESSION_DIR)) {
+            fs.mkdirSync(SESSION_DIR, { recursive: true });
+        }
+        const { data } = await supabase.from('wa_sessions').select('*');
+        if (data && data.length > 0) {
+            console.log(' Mengunduh cadangan sesi dari Supabase ke lokal disk...');
+            for (const row of data) {
+                const filePath = path.join(SESSION_DIR, `${row.id}.json`);
+                fs.writeFileSync(filePath, JSON.stringify(row.data));
             }
-        } catch (error) {
-            console.error(` Error membaca sesi (${type}-${id}):`, error.message);
+            console.log(' Pemulihan sesi dari Supabase selesai.');
         }
-        return null;
-    };
+    } catch (err) {
+        console.error(' Gagal memulihkan sesi dari Supabase:', err.message);
+    }
+}
 
-    const writeData = async (type, id, value) => {
-        try {
-            const key = `${type}-${id}`;
-            const jsonValue = JSON.parse(JSON.stringify(value, BufferJSON.replacer));
-            await supabase
-                .from('wa_sessions')
-                .upsert({ id: key, data: jsonValue, updated_at: new Date().toISOString() });
-        } catch (error) {
-            console.error(` Error menyimpan sesi (${type}-${id}):`, error.message);
-        }
-    };
-
-    const removeData = async (type, id) => {
-        try {
-            await supabase.from('wa_sessions').delete().eq('id', `${type}-${id}`);
-        } catch (error) {
-            console.error(` Error menghapus sesi (${type}-${id}):`, error.message);
-        }
-    };
-
-    const credsData = await readData('creds', 'main');
-    const creds = credsData || initAuthCreds();
-
-    return {
-        state: {
-            creds,
-            keys: {
-                get: async (type, ids) => {
-                    const data = {};
-                    await Promise.all(
-                        ids.map(async (id) => {
-                            let value = await readData(type, id);
-                            if (type === 'app-state-sync-key' && value) {
-                                value = value;
-                            }
-                            if (value) data[id] = value;
-                        })
-                    );
-                    return data;
-                },
-                set: async (data) => {
-                    const tasks = [];
-                    for (const category in data) {
-                        for (const id in data[category]) {
-                            const value = data[category][id];
-                            if (value) {
-                                tasks.push(writeData(category, id, value));
-                            } else {
-                                tasks.push(removeData(category, id));
-                            }
-                        }
-                    }
-                    await Promise.all(tasks);
-                }
+async function backupSessionToSupabase() {
+    try {
+        if (!fs.existsSync(SESSION_DIR)) return;
+        const files = fs.readdirSync(SESSION_DIR);
+        for (const file of files) {
+            if (file.endsWith('.json')) {
+                const fileId = file.replace('.json', '');
+                const filePath = path.join(SESSION_DIR, file);
+                const content = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+                
+                await supabase.from('wa_sessions').upsert({
+                    id: fileId,
+                    data: content,
+                    updated_at: new Date().toISOString()
+                });
             }
-        },
-        saveCreds: () => writeData('creds', 'main', creds)
-    };
+        }
+        console.log(' [BACKUP] Sesi WhatsApp berhasil disinkronkan ke Supabase.');
+    } catch (err) {
+        console.error(' Gagal backup sesi ke Supabase:', err.message);
+    }
 }
 
 // Ekstraksi Nomor HP Pengirim
@@ -207,10 +174,14 @@ async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
 }
 
 // ==========================================
-// 4. INISIALISASI BOT WHATSAPP (SUPABASE PERSISTENCE)
+// 4. INISIALISASI BOT WHATSAPP
 // ==========================================
 async function startBot() {
-    const { state, saveCreds } = await useSupabaseAuthState();
+    // 1. Pulihkan sesi dari Supabase jika folder disk lokal kosong
+    await restoreSessionFromSupabase();
+
+    // 2. Gunakan auth state berbasis disk lokal yang super cepat
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -218,7 +189,7 @@ async function startBot() {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
+        browser: Browsers.ubuntu('Chrome'), // Gunakan browser standar resmi Baileys
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
@@ -228,7 +199,10 @@ async function startBot() {
         }
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        await backupSessionToSupabase(); // Cadangkan setiap ada perubahan kunci
+    });
 
     sock.ev.on('contacts.upsert', (contacts) => {
         for (const contact of contacts) {
@@ -242,7 +216,7 @@ async function startBot() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
 
-        // MINTA KODE PAIRING HANYA JIKA BELUM TERDAFTAR DI SUPABASE
+        // MINTA KODE PAIRING HANYA JIKA BELUM TERDAFTAR
         if (!sock.authState.creds.registered && !isPairingRequested) {
             isPairingRequested = true;
             setTimeout(async () => {
@@ -270,19 +244,25 @@ async function startBot() {
             console.log(` Koneksi terputus (Reason Code: ${statusCode})`);
 
             if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                console.log(' Sesi terputus permanen / Logged Out. Membersihkan sesi Supabase...');
+                console.log(' Sesi terputus permanen / Logged Out. Membersihkan sesi...');
+                if (fs.existsSync(SESSION_DIR)) {
+                    fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+                }
                 await supabase.from('wa_sessions').delete().neq('id', '');
-                console.log(' Memuat ulang bot...');
+                setTimeout(() => startBot(), 3000);
+            } else if (!sock.authState.creds.registered) {
+                console.log(' [PAIRED PENDING] Reconnecting internal socket...');
                 setTimeout(() => startBot(), 3000);
             } else {
-                console.log(' Memicu auto-restart proses Node.js (Sesi aman tersimpan di Supabase)...');
+                console.log(' Memicu auto-restart (Sesi telah aman di-backup ke Supabase)...');
                 process.exit(1);
             }
         } else if (connection === 'open') {
-            console.log(' Menyinkronkan sesi WhatsApp dari Supabase...');
+            console.log(' Menyinkronkan sesi WhatsApp...');
             await sleep(3000);
             isReady = true;
-            console.log('\n WhatsApp Client (Baileys Engine + Supabase Auth) Berhasil Terhubung & Siap 100%!\n');
+            console.log('\n WhatsApp Client (Hybrid Storage) Berhasil Terhubung & Siap 100%!\n');
+            await backupSessionToSupabase();
         }
     });
 
