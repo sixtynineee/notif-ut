@@ -8,7 +8,6 @@ const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const http = require('http');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal');
 
 // ==========================================
 // 1. SERVER HEALTH-CHECK (RENDER KEEP-ALIVE)
@@ -27,6 +26,9 @@ http.createServer((req, res) => {
 const SUPABASE_URL = "https://mzxrcslawziuvzqpwbjs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// MASUKKAN NOMOR HP BOT KAMU DI SINI (FORMAT: 628xxx)
+const BOT_PHONE_NUMBER = "6283148834649"; 
 
 const lidToPhoneMap = new Map();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -81,7 +83,6 @@ function resolvePhoneNumber(msg) {
 
 // Fungsi Pencarian Mahasiswa (LID + Nomor Phone Suffix)
 async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
-    // 1. Cek langsung via LID jika rawFrom adalah akun LID
     if (rawFrom.endsWith('@lid')) {
         const { data: lidMatch } = await supabase
             .from('mahasiswa')
@@ -92,7 +93,6 @@ async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
         if (lidMatch) return lidMatch;
     }
 
-    // 2. Jika tidak ketemu via LID, cari via Nomor WA
     if (nomor62) {
         const nomor08 = '0' + nomor62.slice(2);
         const nomorPlus62 = '+' + nomor62;
@@ -106,7 +106,6 @@ async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
         if (directMatch) return directMatch;
     }
 
-    // 3. Fallback: Ambil semua mahasiswa aktif & cocokkan digit belakang (9-10 digit)
     const { data: allMhs } = await supabase.from('mahasiswa').select('*');
     if (allMhs && allMhs.length > 0) {
         if (nomor62) {
@@ -125,7 +124,7 @@ async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
 }
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP
+// 3. INISIALISASI BOT WHATSAPP (PAIRING CODE MODE)
 // ==========================================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
@@ -145,6 +144,25 @@ async function startBot() {
         }
     });
 
+    // MINTA KODE PAIRING JIKA BELUM TERLINK/TERHUBUNG
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                let cleanNumber = formatTo62(BOT_PHONE_NUMBER);
+                let code = await sock.requestPairingCode(cleanNumber);
+                code = code?.match(/.{1,4}/g)?.join('-') || code;
+                
+                console.log('\n==================================================');
+                console.log(` KODE PAIRING WHATSAPP BOT KAMU:  ${code}`);
+                console.log(' Masukkan kode di atas di HP kamu via:');
+                console.log(' WhatsApp > Perangkat Tertaut > Tautkan dengan Nomor Telepon');
+                console.log('==================================================\n');
+            } catch (err) {
+                console.error(' Gagal meminta Pairing Code:', err.message || err);
+            }
+        }, 5000);
+    }
+
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('contacts.upsert', (contacts) => {
@@ -157,15 +175,7 @@ async function startBot() {
     });
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            console.log('\n==================================================');
-            console.log(' SCAN QR CODE DI BAWAH VIA WHATSAPP:');
-            console.log('==================================================');
-            qrcode.generate(qr, { small: true });
-            console.log('==================================================\n');
-        }
+        const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
             isReady = false;
@@ -175,7 +185,7 @@ async function startBot() {
             if (statusCode === DisconnectReason.loggedOut) {
                 console.log(' Sesi Terputus/Log Out Permanen.');
             } else {
-                // AUTO-RESTART OTOMATIS: Memaksa proses Node.js keluar agar Render menyegarkan koneksi secara bersih
+                // AUTO-RESTART OTOMATIS: Memaksa proses Node.js keluar agar Render me-reset RAM & menyegarkan sesi
                 console.log(' Memicu auto-restart proses Node.js agar koneksi WA segar kembali...');
                 process.exit(1);
             }
@@ -208,13 +218,9 @@ async function startBot() {
 
                 if (!teks) continue;
 
-                // 1. Ekstraksi nomor HP (jika ada metadata)
                 let nomor62 = resolvePhoneNumber(msg);
-
-                // 2. Cari Data Mahasiswa di Supabase
                 const dataMahasiswa = await findMahasiswaByLidOrPhone(rawFrom, nomor62);
 
-                // 3. AUTO-LINK: Simpan LID pengirim secara otomatis jika belum ada
                 if (dataMahasiswa && rawFrom.endsWith('@lid') && !dataMahasiswa.lid) {
                     await supabase
                         .from('mahasiswa')
