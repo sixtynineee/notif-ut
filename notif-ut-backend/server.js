@@ -34,6 +34,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let sock;
 let isReady = false;
 
+// Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('Session Error') || err.message.includes('decrypt') || err.message.includes('prekey'))) {
         return;
@@ -108,17 +109,15 @@ async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
     // 3. Fallback: Ambil semua mahasiswa aktif & cocokkan digit belakang (9-10 digit)
     const { data: allMhs } = await supabase.from('mahasiswa').select('*');
     if (allMhs && allMhs.length > 0) {
-        // A. Jika ada nomor HP terurai
         if (nomor62) {
             const lastDigitsSender = nomor62.slice(-9);
             const matched = allMhs.find(mhs => cleanNumber(mhs.nomor_wa).endsWith(lastDigitsSender));
             if (matched) return matched;
         }
         
-        // B. Jika nomor belum ada di LID tapi hanya ada 1 mahasiswa aktif yang belum tersambung LID-nya
         const unlinkedMhs = allMhs.filter(m => !m.lid && m.status_aktif);
         if (unlinkedMhs.length === 1) {
-            return unlinkedMhs[0]; // Auto link ke mahasiswa tersebut jika baru ada 1 pendaftar
+            return unlinkedMhs[0];
         }
     }
 
@@ -173,14 +172,12 @@ async function startBot() {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.log(` Koneksi terputus (Reason Code: ${statusCode})`);
 
-            if (statusCode === 515 || statusCode === DisconnectReason.restartRequired) {
-                console.log(' [RESTART REQUIRED] Menghubungkan ulang...');
-                setTimeout(() => startBot(), 2000);
-            } else if (statusCode !== DisconnectReason.loggedOut) {
-                console.log(' Reconnecting otomatis...');
-                setTimeout(() => startBot(), 3000);
+            if (statusCode === DisconnectReason.loggedOut) {
+                console.log(' Sesi Terputus/Log Out Permanen.');
             } else {
-                console.log(' Sesi Terputus/Log Out.');
+                // AUTO-RESTART OTOMATIS: Memaksa proses Node.js keluar agar Render menyegarkan koneksi secara bersih
+                console.log(' Memicu auto-restart proses Node.js agar koneksi WA segar kembali...');
+                process.exit(1);
             }
         } else if (connection === 'open') {
             console.log(' Menyinkronkan sesi WhatsApp...');
@@ -217,7 +214,7 @@ async function startBot() {
                 // 2. Cari Data Mahasiswa di Supabase
                 const dataMahasiswa = await findMahasiswaByLidOrPhone(rawFrom, nomor62);
 
-                // 3. AUTO-LINK: Jika Mahasiswa ditemukan tetapi kolom `lid` di Supabase masih kosong, simpan LID pengirim secara otomatis
+                // 3. AUTO-LINK: Simpan LID pengirim secara otomatis jika belum ada
                 if (dataMahasiswa && rawFrom.endsWith('@lid') && !dataMahasiswa.lid) {
                     await supabase
                         .from('mahasiswa')
@@ -305,7 +302,7 @@ async function kirimNotifikasiMassal(jadwal) {
     if (!sock || !isReady) return;
 
     await supabase.from('jadwal_tuton').update({ status_terkirim: true }).eq('id', jadwal.id);
-    console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi}`);
+    console.log(`\n[SCHEDULER] Menjalankan pengiriman notifikasi: ${jadwal.nama_sesi} (${jadwal.tipe_pengingat})`);
 
     const { data: daftarMahasiswa } = await supabase
         .from('mahasiswa')
@@ -318,20 +315,25 @@ async function kirimNotifikasiMassal(jadwal) {
         let nomorBersih = formatTo62(mhs.nomor_wa);
         if (!nomorBersih) continue;
 
-        // Utamakan pengiriman ke LID jika tersimpan, fallback ke nomor HP
         const targetJid = mhs.lid || `${nomorBersih}@s.whatsapp.net`;
+        const isTugas = jadwal.nama_sesi.includes("Tugas");
+        const jenisKegiatan = isTugas ? "Tugas" : "Diskusi";
 
         let pesan = "";
         if (jadwal.tipe_pengingat === "SESI_BUKA") {
-            pesan = `Halo ${mhs.nama}!\n\nSekadar mengingatkan, *${jadwal.nama_sesi}* sudah dibuka ya.\n\nDeadline: _${jadwal.deadline_non_praktik}_. Jangan lupa akses elearning.ut.ac.id dan mulai mencicil diskusinya. Semangat! `;
+            pesan = `Halo ${mhs.nama}!\n\nSekadar mengingatkan, *${jadwal.nama_sesi}* sudah resmi dibuka ya.\n\n📘 Batas Akhir: _${jadwal.deadline_non_praktik}_\n\nYuk segera login di elearning.ut.ac.id dan mulai mencicil ${jenisKegiatan} kamu! Semangat!`;
+        } else if (jadwal.tipe_pengingat === "H-10 DEADLINE") {
+            pesan = `Halo ${mhs.nama}!\n\nPengingat santai: Waktu pengerjaan *${jadwal.nama_sesi}* sisa *10 hari lagi* (_${jadwal.deadline_non_praktik}_).\n\nMumpung masih panjang, yuk dicicil dari sekarang di elearning.ut.ac.id!`;
         } else if (jadwal.tipe_pengingat === "H-7 DEADLINE") {
-            pesan = `Halo ${mhs.nama}!\n\nDeadline untuk *${jadwal.nama_sesi}* tinggal *7 hari lagi* (_${jadwal.deadline_non_praktik}_).\n\nYuk mulai dikerjakan di elearning.ut.ac.id!`;
+            pesan = `Halo ${mhs.nama}!\n\nPengingat minggu kedua: Batas akhir untuk *${jadwal.nama_sesi}* tinggal *7 hari lagi* (_${jadwal.deadline_non_praktik}_).\n\nJangan lupa luangkan waktu minggu ini untuk menyelesaikan ${jenisKegiatan} kamu di elearning.ut.ac.id ya!`;
+        } else if (jadwal.tipe_pengingat === "H-5 DEADLINE") {
+            pesan = `Halo ${mhs.nama}!\n\nPengingat pertengahan: Deadline *${jadwal.nama_sesi}* tinggal *5 hari lagi* nih (_${jadwal.deadline_non_praktik}_).\n\nYuk segara selesaikan pengerjaannya di elearning.ut.ac.id!`;
         } else if (jadwal.tipe_pengingat === "H-3 DEADLINE") {
-            pesan = `Halo ${mhs.nama}!\n\nPengingat: deadline *${jadwal.nama_sesi}* sisa *3 hari lagi* (_${jadwal.deadline_non_praktik}_).\n\nSegera selesaikan sebelum menumpuk!`;
+            pesan = `Halo ${mhs.nama}!\n\nPengingat cepat: Batas waktu untuk *${jadwal.nama_sesi}* tinggal *3 hari lagi* nih (_${jadwal.deadline_non_praktik}_).\n\nJangan sampai terlewat ya, yuk segera tuntaskan ${jenisKegiatan} di elearning.ut.ac.id!`;
         } else if (jadwal.tipe_pengingat === "H-1 DEADLINE") {
-            pesan = `Halo ${mhs.nama}!\n\nBesok adalah batas akhir *${jadwal.nama_sesi}* (_${jadwal.deadline_non_praktik}_).\n\nPastikan tugas/diskusi sudah diunggah di elearning.ut.ac.id! `;
+            pesan = `Halo ${mhs.nama}!\n\nPengingat H-1: Besok adalah batas akhir pengunggahan untuk *${jadwal.nama_sesi}* (_${jadwal.deadline_non_praktik}_).\n\nPastikan lembar ${jenisKegiatan} kamu sudah ter-upload dengan benar di elearning.ut.ac.id ya. Semangat!`;
         } else if (jadwal.tipe_pengingat === "HARI-H DEADLINE") {
-            pesan = `Halo ${mhs.nama}!\n\nHari ini *DEADLINE TERAKHIR* untuk *${jadwal.nama_sesi}*!\n\nBatas pengunggahan sampai pukul 23.59 WIB. Segera unggah di elearning.ut.ac.id sekarang juga! `;
+            pesan = `🚨 *LAST CHANCE - DEADLINE HARI INI!*\n\nHalo ${mhs.nama}!\n\nHari ini adalah *BATAS AKHIR TERAKHIR* untuk *${jadwal.nama_sesi}*!\n\n⏰ Batas Pengunggahan: _Pukul 23.59 WIB malam ini_.\n\nJika belum selesai, yuk segera unggah ${jenisKegiatan} kamu di elearning.ut.ac.id sekarang juga!`;
         } else {
             pesan = `Halo ${mhs.nama},\n\nPengingat untuk *${jadwal.nama_sesi}* dengan batas waktu _${jadwal.deadline_non_praktik}_.\n\nCek elearning.ut.ac.id ya!`;
         }
