@@ -35,7 +35,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let sock;
 let isReady = false;
-let isPairingRequested = false;
 
 // Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
@@ -125,7 +124,7 @@ async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
 }
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (SAFE PAIRING MODE)
+// 3. INISIALISASI BOT WHATSAPP (FIX PAIRING CONNECTION)
 // ==========================================
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
@@ -145,6 +144,25 @@ async function startBot() {
         }
     });
 
+    // PERMINTAAN KODE PAIRING (HANYA DILAKUKAN JIKA BELUM TERDAFTAR)
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                let cleanNumber = formatTo62(BOT_PHONE_NUMBER);
+                let code = await sock.requestPairingCode(cleanNumber);
+                code = code?.match(/.{1,4}/g)?.join('-') || code;
+                
+                console.log('\n==================================================');
+                console.log(` KODE PAIRING WHATSAPP BOT KAMU:  ${code}`);
+                console.log(' Masukkan kode di atas di HP kamu via:');
+                console.log(' WhatsApp > Perangkat Tertaut > Tautkan dengan Nomor Telepon');
+                console.log('==================================================\n');
+            } catch (err) {
+                console.error(' Gagal meminta Pairing Code:', err.message || err);
+            }
+        }, 6000);
+    }
+
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('contacts.upsert', (contacts) => {
@@ -159,36 +177,19 @@ async function startBot() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
 
-        // MINTA KODE PAIRING HANYA SAAT KONEKSI MULAI MEMBUKA (BEBAS TIMEOUT/REASON 515)
-        if (!sock.authState.creds.registered && !isPairingRequested) {
-            isPairingRequested = true;
-            setTimeout(async () => {
-                try {
-                    let cleanNumber = formatTo62(BOT_PHONE_NUMBER);
-                    let code = await sock.requestPairingCode(cleanNumber);
-                    code = code?.match(/.{1,4}/g)?.join('-') || code;
-                    
-                    console.log('\n==================================================');
-                    console.log(` KODE PAIRING WHATSAPP BOT KAMU:  ${code}`);
-                    console.log(' Masukkan kode di atas di HP kamu via:');
-                    console.log(' WhatsApp > Perangkat Tertaut > Tautkan dengan Nomor Telepon');
-                    console.log('==================================================\n');
-                } catch (err) {
-                    console.error(' Gagal meminta Pairing Code, mencoba lagi nanti:', err.message || err);
-                    isPairingRequested = false;
-                }
-            }, 6000); // Waktu yang sangat stabil saat WS socket siap
-        }
-
         if (connection === 'close') {
             isReady = false;
-            isPairingRequested = false;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.log(` Koneksi terputus (Reason Code: ${statusCode})`);
 
-            if (statusCode === DisconnectReason.loggedOut) {
+            // JIKA BELUM STABIL/TERDAFTAR, JANGAN GUNAKAN PROCESS.EXIT
+            if (!sock.authState.creds.registered) {
+                console.log(' [PAIRED PENDING] Reconnecting internal socket Baileys...');
+                setTimeout(() => startBot(), 3000);
+            } else if (statusCode === DisconnectReason.loggedOut) {
                 console.log(' Sesi Terputus/Log Out Permanen.');
             } else {
+                // JIKA SUDAH SUKSES TERDAFTAR (100%), BARU GUNAKAN PROCESS.EXIT SAAT DISCONNECT UNTUK MERESET MEMORI 512MB
                 console.log(' Memicu auto-restart proses Node.js agar koneksi WA segar kembali...');
                 process.exit(1);
             }
