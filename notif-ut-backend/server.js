@@ -1,8 +1,9 @@
 const {
     default: makeWASocket,
-    useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    initAuthCreds,
+    BufferJSON
 } = require('@whiskeysockets/baileys');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
@@ -15,7 +16,7 @@ const pino = require('pino');
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot UT WhatsApp (Baileys Engine) Active!\n');
+    res.end('Bot UT WhatsApp (Baileys Engine + Supabase Auth) Active!\n');
 }).listen(PORT, () => {
     console.log(` Health-Check Server berjalan di port ${PORT}`);
 });
@@ -28,13 +29,14 @@ const SUPABASE_ANON_KEY = "sb_publishable_fdJvajntNzea73UkHOvBmg_tKRkvwG5";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // NOMOR HP BOT WHATSAPP KAMU (FORMAT: 628xxx)
-const BOT_PHONE_NUMBER = "6283148834649"; 
+const BOT_PHONE_NUMBER = "6283148834649";
 
 const lidToPhoneMap = new Map();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let sock;
 let isReady = false;
+let isPairingRequested = false;
 
 // Mencegah crash akibat Uncaught Error enkripsi Signal
 process.on('uncaughtException', (err) => {
@@ -56,6 +58,87 @@ function formatTo62(str) {
         clean = '62' + clean.slice(1);
     }
     return clean;
+}
+
+// ==========================================
+// 3. ADAPTER SESI BAILEYS KE SUPABASE DATABASE
+// ==========================================
+async function useSupabaseAuthState() {
+    const readData = async (type, id) => {
+        try {
+            const { data } = await supabase
+                .from('wa_sessions')
+                .select('data')
+                .eq('id', `${type}-${id}`)
+                .maybeSingle();
+
+            if (data && data.data) {
+                return JSON.parse(JSON.stringify(data.data), BufferJSON.reviver);
+            }
+        } catch (error) {
+            console.error(` Error membaca sesi (${type}-${id}):`, error.message);
+        }
+        return null;
+    };
+
+    const writeData = async (type, id, value) => {
+        try {
+            const key = `${type}-${id}`;
+            const jsonValue = JSON.parse(JSON.stringify(value, BufferJSON.replacer));
+            await supabase
+                .from('wa_sessions')
+                .upsert({ id: key, data: jsonValue, updated_at: new Date().toISOString() });
+        } catch (error) {
+            console.error(` Error menyimpan sesi (${type}-${id}):`, error.message);
+        }
+    };
+
+    const removeData = async (type, id) => {
+        try {
+            await supabase.from('wa_sessions').delete().eq('id', `${type}-${id}`);
+        } catch (error) {
+            console.error(` Error menghapus sesi (${type}-${id}):`, error.message);
+        }
+    };
+
+    const credsData = await readData('creds', 'main');
+    const creds = credsData || initAuthCreds();
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    await Promise.all(
+                        ids.map(async (id) => {
+                            let value = await readData(type, id);
+                            if (type === 'app-state-sync-key' && value) {
+                                value = value;
+                            }
+                            if (value) data[id] = value;
+                        })
+                    );
+                    return data;
+                },
+                set: async (data) => {
+                    const tasks = [];
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            if (value) {
+                                tasks.push(writeData(category, id, value));
+                            } else {
+                                tasks.push(removeData(category, id));
+                            }
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: () => writeData('creds', 'main', creds)
+    };
 }
 
 // Ekstraksi Nomor HP Pengirim
@@ -124,15 +207,16 @@ async function findMahasiswaByLidOrPhone(rawFrom, nomor62) {
 }
 
 // ==========================================
-// 3. INISIALISASI BOT WHATSAPP (FIX PAIRING CONNECTION)
+// 4. INISIALISASI BOT WHATSAPP (SUPABASE PERSISTENCE)
 // ==========================================
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('baileys_session_v3');
+    const { state, saveCreds } = await useSupabaseAuthState();
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
         version,
         auth: state,
+        printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: ['Ubuntu', 'Chrome', '121.0.6167.160'],
         connectTimeoutMs: 60000,
@@ -143,25 +227,6 @@ async function startBot() {
             return { conversation: '' };
         }
     });
-
-    // PERMINTAAN KODE PAIRING (HANYA DILAKUKAN JIKA BELUM TERDAFTAR)
-    if (!sock.authState.creds.registered) {
-        setTimeout(async () => {
-            try {
-                let cleanNumber = formatTo62(BOT_PHONE_NUMBER);
-                let code = await sock.requestPairingCode(cleanNumber);
-                code = code?.match(/.{1,4}/g)?.join('-') || code;
-                
-                console.log('\n==================================================');
-                console.log(` KODE PAIRING WHATSAPP BOT KAMU:  ${code}`);
-                console.log(' Masukkan kode di atas di HP kamu via:');
-                console.log(' WhatsApp > Perangkat Tertaut > Tautkan dengan Nomor Telepon');
-                console.log('==================================================\n');
-            } catch (err) {
-                console.error(' Gagal meminta Pairing Code:', err.message || err);
-            }
-        }, 6000);
-    }
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -177,32 +242,52 @@ async function startBot() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
 
+        // MINTA KODE PAIRING HANYA JIKA BELUM TERDAFTAR DI SUPABASE
+        if (!sock.authState.creds.registered && !isPairingRequested) {
+            isPairingRequested = true;
+            setTimeout(async () => {
+                try {
+                    let cleanNumber = formatTo62(BOT_PHONE_NUMBER);
+                    let code = await sock.requestPairingCode(cleanNumber);
+                    code = code?.match(/.{1,4}/g)?.join('-') || code;
+                    
+                    console.log('\n==================================================');
+                    console.log(` KODE PAIRING WHATSAPP BOT KAMU:  ${code}`);
+                    console.log(' Masukkan kode di atas di HP kamu via:');
+                    console.log(' WhatsApp > Perangkat Tertaut > Tautkan dengan Nomor Telepon');
+                    console.log('==================================================\n');
+                } catch (err) {
+                    console.error(' Gagal meminta Pairing Code:', err.message || err);
+                    isPairingRequested = false;
+                }
+            }, 6000);
+        }
+
         if (connection === 'close') {
             isReady = false;
+            isPairingRequested = false;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.log(` Koneksi terputus (Reason Code: ${statusCode})`);
 
-            // JIKA BELUM STABIL/TERDAFTAR, JANGAN GUNAKAN PROCESS.EXIT
-            if (!sock.authState.creds.registered) {
-                console.log(' [PAIRED PENDING] Reconnecting internal socket Baileys...');
+            if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+                console.log(' Sesi terputus permanen / Logged Out. Membersihkan sesi Supabase...');
+                await supabase.from('wa_sessions').delete().neq('id', '');
+                console.log(' Memuat ulang bot...');
                 setTimeout(() => startBot(), 3000);
-            } else if (statusCode === DisconnectReason.loggedOut) {
-                console.log(' Sesi Terputus/Log Out Permanen.');
             } else {
-                // JIKA SUDAH SUKSES TERDAFTAR (100%), BARU GUNAKAN PROCESS.EXIT SAAT DISCONNECT UNTUK MERESET MEMORI 512MB
-                console.log(' Memicu auto-restart proses Node.js agar koneksi WA segar kembali...');
+                console.log(' Memicu auto-restart proses Node.js (Sesi aman tersimpan di Supabase)...');
                 process.exit(1);
             }
         } else if (connection === 'open') {
-            console.log(' Menyinkronkan sesi WhatsApp...');
+            console.log(' Menyinkronkan sesi WhatsApp dari Supabase...');
             await sleep(3000);
             isReady = true;
-            console.log('\n WhatsApp Client (Baileys Engine) Berhasil Terhubung & Siap 100%!\n');
+            console.log('\n WhatsApp Client (Baileys Engine + Supabase Auth) Berhasil Terhubung & Siap 100%!\n');
         }
     });
 
     // ==========================================
-    // 4. AUTO-REPLY MESSAGES HANDLER
+    // 5. AUTO-REPLY MESSAGES HANDLER
     // ==========================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -306,7 +391,7 @@ async function startBot() {
 }
 
 // ==========================================
-// 5. LOGIKA PENGIRIMAN NOTIFIKASI SCHEDULER
+// 6. LOGIKA PENGIRIMAN NOTIFIKASI SCHEDULER
 // ==========================================
 async function kirimNotifikasiMassal(jadwal) {
     if (!sock || !isReady) return;
@@ -369,7 +454,7 @@ async function kirimNotifikasiMassal(jadwal) {
 }
 
 // ==========================================
-// 6. CRONJOB SCHEDULER
+// 7. CRONJOB SCHEDULER
 // ==========================================
 cron.schedule('* * * * *', async () => {
     if (!isReady) return;
